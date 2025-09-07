@@ -196,3 +196,300 @@ def download_images(tweet_id, handle, image_urls):
 - Log include/skip reasons for prompt refinement
 - Cap daily total (10-20 items)
 - Add image understanding only if truly needed
+
+## Current Progress (as of 2025-09-04)
+
+### Phase 1 - MVP Implementation ✅ COMPLETED
+**Status:** Fully functional MVP newsletter system
+
+**Implemented Features:**
+- ✅ RSS feed fetching from Nitter instance (http://10.8.0.1:8080)
+- ✅ SQLite database with comprehensive tweet storage
+- ✅ Image downloading and local storage (organized by date: `images/YYYY-MM-DD/`)
+- ✅ Profile picture handling for authors and retweet authors
+- ✅ Rich HTML email generation with Twitter-like formatting
+- ✅ Retweet detection and proper attribution
+- ✅ Quote tweet handling with content extraction
+- ✅ Reply detection
+- ✅ Base64 image embedding in emails
+- ✅ CLI interface with `--dry-run` and `--send` options
+- ✅ Configurable time windows and post limits
+- ✅ SMTP email delivery via Gmail
+
+**Current Configuration:**
+- **Accounts:** teortaxestex, zephyr_z9, spandrell4
+- **Window:** 72 hours (3 days)
+- **Max per account:** 250 posts
+- **Nitter instance:** Local (10.8.0.1:8080)
+- **Email:** Gmail SMTP
+
+**File Structure (Current):**
+```
+kestral/
+├── .env                    # SMTP + Nitter config
+├── accounts.yaml           # Account list + settings
+├── main.py                 # Complete MVP implementation (573 lines)
+├── newsletter.db           # SQLite database (functional)
+├── images/                 # Downloaded images
+│   └── 2025-09-03/        # Daily organization
+├── .venv/                  # Python virtual environment
+└── CLAUDE.md              # This file
+```
+
+**Database Schema:** Full implementation with 19 columns including metadata, URLs, image paths, tweet type detection, and LLM preparation fields.
+
+**Next Steps:**
+- Phase 2: Add LLM filtering with prompts/
+- Phase 3: Email template improvements
+- Phase 4: Scheduling and operational tools
+
+**Testing Status:** Ready for production use in MVP mode
+
+## Discord Integration Plan
+
+### Overview
+Expand the newsletter system to include Discord server summaries using a hierarchical LLM processing approach. Keep the same simple, single-file philosophy while adding Discord as a parallel data source.
+
+### Core Design Principles
+- **Separate emails:** Discord gets its own dedicated email (like individual Twitter accounts)
+- **Volume handling:** Use hierarchical summarization for ~1000 messages/day
+- **Incremental phases:** Start with data collection, add email later
+- **Intern-friendly:** Mirror existing Twitter patterns and structure
+
+### Database Schema Extensions
+
+#### Discord Messages Table
+```sql
+CREATE TABLE discord_messages (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT,
+  channel_name TEXT,
+  author_name TEXT,
+  author_id TEXT,
+  content TEXT,
+  timestamp TIMESTAMP,
+  message_type TEXT,  -- 'normal', 'reply', 'thread_start'
+  thread_id TEXT,     -- for threading conversations
+  attachments TEXT,   -- JSON array of attachment URLs
+  reactions TEXT,     -- JSON for reaction counts
+  first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  included_in_newsletter BOOLEAN DEFAULT FALSE,
+  llm_reason TEXT
+);
+```
+
+#### Discord Summaries Table
+```sql
+CREATE TABLE discord_summaries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date DATE,
+  channel_name TEXT,
+  summary_type TEXT,  -- 'play_by_play', 'channel_summary', 'conversation'
+  summary_text TEXT,
+  message_ids TEXT,   -- JSON array of contributing message IDs
+  block_number INTEGER, -- for play-by-play tracking
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Hierarchical Summary Algorithm
+
+**Step 1: Streaming Play-by-Play Generation**
+```
+For each channel:
+  1. Fetch all messages from past 24h, ordered chronologically
+  2. Process in blocks of 40 messages (with 5 message overlap)
+  3. For each block:
+     - Input: Current play-by-play summary + next 40 messages
+     - Output: Updated play-by-play summary
+     - Save to discord_summaries as type='play_by_play'
+  4. Repeat until all messages processed
+```
+
+**Step 2: Channel Summary Generation**
+```
+For each channel:
+  1. Take final play-by-play summary from Step 1
+  2. LLM prompt: "Convert this play-by-play into a 5-minute summary"
+  3. Save as type='channel_summary'
+```
+
+**Benefits of This Approach:**
+- Handles arbitrarily large message volumes
+- Maintains context across long conversations
+- Preserves important details while reducing noise
+- Scalable processing (can pause/resume)
+
+### Configuration Additions
+
+#### accounts.yaml Extension
+```yaml
+# Existing Twitter config unchanged...
+
+discord:
+  enabled: true
+  server_id: "123456789"
+  bot_token_env: "DISCORD_BOT_TOKEN"
+  channels:
+    - "general"
+    - "development" 
+    - "random"
+    # Or use "all" to include all channels
+  window_hours: 24
+  processing:
+    block_size: 40
+    overlap_size: 5
+    min_messages_for_summary: 10  # Skip quiet channels
+```
+
+#### Environment Variables
+```bash
+# Add to .env
+DISCORD_BOT_TOKEN=your_bot_token_here
+DISCORD_ENABLED=true
+```
+
+### Implementation Phases
+
+#### Phase 1: Data Collection (No Email) 🎯 NEXT
+**Goal:** Establish Discord message fetching and storage pipeline
+
+**Tasks:**
+- Add Discord bot setup with `discord.py`
+- Implement message fetching across channels
+- Store messages in `discord_messages` table
+- Add `--discord-only` CLI flag for testing
+- Test with `python main.py --discord-only --dry-run`
+
+**Success Criteria:**
+- Messages from past 24h stored in database
+- Basic message metadata captured (author, channel, timestamps)
+- No crashes on large message volumes
+
+#### Phase 2: Hierarchical Summarization
+**Goal:** Implement streaming play-by-play and channel summaries
+
+**Tasks:**
+- Add LLM integration for hierarchical processing
+- Implement block-based processing with overlap
+- Generate play-by-play summaries
+- Convert play-by-play to final channel summaries
+- Store all summaries in `discord_summaries` table
+
+**Success Criteria:**
+- Each active channel gets a coherent summary
+- Processing handles 1000+ messages without memory issues
+- Summaries capture key themes and decisions
+
+#### Phase 3: Email Integration
+**Goal:** Generate and send Discord newsletter
+
+**Tasks:**
+- Create Discord-specific email template
+- Format channel summaries for email
+- Add interesting individual messages section
+- Implement separate Discord email sending
+- Add Discord subject line generation
+
+**Email Structure:**
+```
+📧 Discord Server Newsletter - 2025-09-07
+
+Channel Summaries:
+├── #general: [5-minute summary]
+├── #development: [5-minute summary]
+└── #random: [5-minute summary]
+
+Highlighted Messages:
+├── Message 1 with high engagement
+├── Technical insight from #development
+└── Important announcement
+
+Generated by Newsletter System
+```
+
+#### Phase 4: Polish & Operations
+**Goal:** Production readiness and operational improvements
+
+**Tasks:**
+- Add reaction/engagement metrics to message filtering
+- Implement conversation thread detection
+- Add Discord-specific prompts for different channel types
+- Add rate limiting and error handling for Discord API
+- Integration with existing cron scheduling
+
+### Modular Architecture
+
+**File Structure:**
+```
+kestral/
+├── main.py              # Entry point + platform dispatch
+├── common_utils.py      # Shared utilities (high bar for inclusion)
+├── twitter.py           # All Twitter/Nitter logic
+├── discord.py           # All Discord logic (future)
+├── accounts.yaml        # Platform configurations
+├── .env                 # Shared environment variables
+├── newsletter.db        # Shared database (both platforms)
+├── images/              # Downloaded images (Twitter + Discord)
+├── .venv/               # Python virtual environment
+└── CLAUDE.md           # This file
+```
+
+**Module Responsibilities:**
+
+**main.py** (Entry point only):
+- CLI argument parsing (`--platform=twitter|discord`)
+- Platform dispatch (route to twitter.main() or discord.main())
+- No business logic, just coordination
+
+**common_utils.py** (Truly shared utilities only):
+- Database initialization (shared schema)
+- Email sending function (generic SMTP)
+- Image utilities (download, base64, server upload)
+- Configuration loading (.env, yaml)
+- High bar: only add if genuinely platform-agnostic
+
+**twitter.py** (All Twitter-specific logic):
+- Post class and Twitter data models
+- RSS feed fetching and parsing
+- Tweet classification (retweets, quotes, replies)
+- Profile picture and image handling
+- Quote tweet content extraction
+- Twitter email rendering
+- Twitter database operations
+
+**discord.py** (All Discord-specific logic - future):
+- Discord bot connection and message fetching
+- Hierarchical summarization pipeline
+- Discord message models and processing
+- Discord email rendering
+- Discord database operations
+
+### CLI Usage Examples
+```bash
+# Test Discord data collection only
+python main.py --discord-only --dry-run
+
+# Send Twitter newsletters only (current behavior)
+python main.py --send
+
+# Send Discord newsletter only  
+python main.py --discord-only --send
+
+# Send both Twitter and Discord (future)
+python main.py --send --include-discord
+```
+
+### Dependencies to Add
+```bash
+pip install discord.py>=2.0
+# Existing: httpx feedparser jinja2 python-dotenv pydantic tenacity
+```
+
+### Success Metrics
+- **Phase 1:** Successfully collect 1000+ messages/day
+- **Phase 2:** Generate coherent summaries for 5+ channels
+- **Phase 3:** Send readable Discord newsletter email
+- **Phase 4:** Zero-maintenance daily operation
+
+This approach maintains the project's core philosophy of simplicity while handling Discord's scale through smart hierarchical processing.

@@ -1,8 +1,11 @@
-accounts:
-  - handle: teortaxestex
-  - handle: zephyr_z9
-  - handle: spandrell4
+account_lists:
+  - name: "teortaxestex"
+    accounts: ["teortaxestex"]
+  - name: "zephyr_z9"
+    accounts: ["zephyr_z9"]
+  - name: "spandrell4"
+    accounts: ["spandrell4"]
 
-# Configuration
-window_hours: 168       # lookback window for new tweets (24 * 7 = 1 week)
-max_per_account: 1000   # cap to prevent spam
+# Global configuration
+window_hours: 72       # lookback window for new tweets (24 * 3 days = 72 hours)
+max_per_account: 250   # cap to prevent spam
