@@ -467,18 +467,37 @@ kestral/
 
 ### CLI Usage Examples
 ```bash
-# Test Discord data collection only
-python main.py --discord-only --dry-run
+# Activate virtual environment first
+source .venv/bin/activate
 
-# Send Twitter newsletters only (current behavior)
-python main.py --send
+# Twitter newsletter (current functionality)
+python main.py --platform=twitter --dry-run
+python main.py --platform=twitter --send
 
-# Send Discord newsletter only  
-python main.py --discord-only --send
+# Discord newsletter (future)
+python main.py --platform=discord --dry-run
+python main.py --platform=discord --send
 
-# Send both Twitter and Discord (future)
-python main.py --send --include-discord
+# Override window for any platform
+python main.py --platform=twitter --send --window=48
 ```
+
+### Cron Job Separation
+```bash
+# Twitter: Every day at 8:00 AM
+0 8 * * * cd ~/kestral && source .venv/bin/activate && python main.py --platform=twitter --send
+
+# Discord: Every day at 8:30 AM (fault isolation)
+30 8 * * * cd ~/kestral && source .venv/bin/activate && python main.py --platform=discord --send
+```
+
+### Benefits of Modular Architecture
+✅ **Fault isolation**: Nitter outage doesn't break Discord newsletter  
+✅ **Independent scaling**: Different schedules per platform  
+✅ **Clean separation**: Single responsibility per file  
+✅ **Easy testing**: Test platforms independently  
+✅ **Future-proof**: Easy to add new platforms  
+✅ **No circular dependencies**: Clean import hierarchy
 
 ### Dependencies to Add
 ```bash
