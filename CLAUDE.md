@@ -73,6 +73,7 @@ max_per_account: 10     # MVP cap, optional
 python main.py --dry-run         # print to console only
 python main.py --send            # actually email
 python main.py --window 24       # override hours
+python main.py --no-db           # skip database (for testing email only)
 ```
 
 ### Phase 2 — Add LLM Filtering

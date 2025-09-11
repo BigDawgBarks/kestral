@@ -16,7 +16,9 @@ import feedparser
 import httpx
 import os
 
+from bs4 import BeautifulSoup
 from common_utils import send_email, upload_to_image_server, get_image_extension
+
 
 
 class AccountList:
@@ -118,7 +120,6 @@ def fetch_quoted_tweet_content(quote_url: str) -> tuple[Optional[str], Optional[
         response = httpx.get(quote_url, timeout=15)
         response.raise_for_status()
         
-        from bs4 import BeautifulSoup
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # Extract quoted tweet author
@@ -158,8 +159,59 @@ def fetch_quoted_tweet_content(quote_url: str) -> tuple[Optional[str], Optional[
         return None, None, []
 
 
-def download_profile_pic(handle: str, profile_pic_url: str) -> tuple[Optional[str], Optional[str]]:
-    """Download profile picture and return (local_path, server_url)"""
+def get_profile_pic_url_from_nitter(handle: str) -> Optional[str]:
+    """Fetch profile picture URL from Nitter user page"""
+    base_url = os.getenv('NITTER_BASE_URL')
+    if not base_url:
+        return None
+    
+    try:
+        user_url = f"{base_url}/{handle}"
+        response = httpx.get(user_url, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Check if the page contains actual profile content
+        profile_card = soup.select_one('.profile-card')
+        timeline = soup.select_one('.timeline')
+        
+        # If no profile content found, account might not exist or be suspended
+        if not profile_card and not timeline:
+            print(f"Profile not accessible for @{handle} (account may not exist or be suspended)")
+            return None
+        
+        # Try multiple selectors for avatar image (profile picture, not banner)
+        avatar_selectors = [
+            '.profile-card .avatar img',
+            '.avatar img',
+            'img.avatar',
+            'img[class*="avatar"]',
+            'img[src*="/pic/"][src*="profile_images"]'  # More specific for profile images
+        ]
+        
+        avatar_img = None
+        for selector in avatar_selectors:
+            avatar_img = soup.select_one(selector)
+            if avatar_img:
+                break
+        
+        if avatar_img:
+            src = avatar_img.get('src')
+            if src and src.startswith('/pic/'):
+                return base_url + src
+            elif src:
+                return src
+        
+        return None
+        
+    except Exception as e:
+        print(f"Failed to fetch profile pic URL for @{handle}: {e}")
+        return None
+
+
+def download_profile_pic(handle: str, profile_pic_url: str, run_timestamp: str) -> tuple[Optional[str], Optional[str]]:
+    """Download profile picture with unique naming and return (local_path, server_url)"""
     if not profile_pic_url:
         return None, None
     
@@ -172,20 +224,20 @@ def download_profile_pic(handle: str, profile_pic_url: str) -> tuple[Optional[st
         response.raise_for_status()
         
         ext = get_image_extension(profile_pic_url, response.headers)
-        filename = f"{handle}_profile{ext}"
+        # Use run timestamp to ensure uniqueness across runs
+        filename = f"{handle}_profile_{run_timestamp}{ext}"
         filepath = images_dir / filename
         
-        # Only download if we don't already have it
-        if not filepath.exists():
-            filepath.write_bytes(response.content)
-            time.sleep(uniform(0.1, 0.3))
+        filepath.write_bytes(response.content)
         
         # Upload to image server
         server_url = upload_to_image_server(str(filepath))
         
+        print(f"Downloaded profile picture for @{handle}")
         return str(filepath), server_url
+        
     except Exception as e:
-        print(f"Failed to download profile pic for {handle}: {e}")
+        print(f"Failed to download profile pic for @{handle}: {e}")
         return None, None
 
 
@@ -217,9 +269,6 @@ def download_images(tweet_id: str, handle: str, image_urls: List[str]) -> tuple[
             server_url = upload_to_image_server(str(filepath))
             if server_url:
                 server_urls.append(server_url)
-            
-            # Be polite - small delay between downloads
-            time.sleep(uniform(0.1, 0.3))
             
         except Exception as e:
             print(f"Failed to download {url}: {e}")
@@ -325,18 +374,7 @@ def fetch_feed(handle: str, window_hours: int, max_posts: int = None) -> List[Po
                     if original_author.startswith('@'):
                         original_author = original_author[1:]  # Remove @ symbol
                     post.retweet_author = original_author
-                    
-                    # Try to get original author's profile pic
-                    if original_author:
-                        try:
-                            orig_feed_url = f"{base_url}/{original_author}/rss"
-                            orig_response = httpx.get(orig_feed_url, timeout=10)
-                            if orig_response.status_code == 200:
-                                orig_feed = feedparser.parse(orig_response.content)
-                                if hasattr(orig_feed.feed, 'image') and hasattr(orig_feed.feed.image, 'url'):
-                                    post.profile_pic_url = orig_feed.feed.image.url
-                        except:
-                            pass  # Use retweeter's profile pic as fallback
+                    # Note: Keep profile_pic_url as the retweeter's pic (from feed metadata)
                 
                 # Check stopping condition: non-retweet older than cutoff
                 if not post.is_retweet and published < cutoff_time:
@@ -424,28 +462,36 @@ def save_posts(posts: List[Post]):
         conn.commit()
 
 
-def render_tweet_html(post: Post) -> str:
+def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Optional[str]]]) -> str:
     """Render a single tweet in Twitter-like HTML format"""
-    # Get profile picture from server URL or fallback
-    profile_pic_html = ''
-    if post.profile_pic_server_url:
-        profile_pic_html = f'<img src="{post.profile_pic_server_url}" style="width: 48px; height: 48px; border-radius: 50%; margin-right: 12px;">'
-    else:
-        # Fallback placeholder
-        profile_pic_html = '<div style="width: 48px; height: 48px; border-radius: 50%; background: #1da1f2; margin-right: 12px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 18px;">{}</div>'.format(post.handle[0].upper())
     
-    # Handle retweet formatting
+    # Determine which author's profile picture to show
     if post.is_retweet:
+        # For retweets, show the original author's profile picture
+        display_author = post.retweet_author or 'unknown'
         retweet_header = f'<div style="color: #657786; font-size: 13px; margin-bottom: 8px;">🔁 Retweeted by @{post.handle}</div>'
-        display_handle = post.retweet_author or 'unknown'
+        display_handle = display_author
         # For retweets, use the original tweet content from description
         tweet_text = re.sub(r'<[^>]+>', '', post.raw_description) if post.raw_description else ''
         tweet_text = re.sub(r'\s+', ' ', tweet_text).strip()  # Clean up whitespace
     else:
+        # For regular tweets and quote tweets, show the main account's profile picture
+        display_author = post.handle
         retweet_header = ''
         display_handle = post.handle
         # Clean up tweet text (remove HTML tags from summary for display)
         tweet_text = re.sub(r'<[^>]+>', '', post.summary) if post.summary else ''
+    
+    # Get profile picture from author_pfps dictionary
+    profile_pic_html = ''
+    author_pfp_info = author_pfps.get(display_author, (None, None))
+    author_pfp_server_url = author_pfp_info[1] if author_pfp_info else None
+    
+    if author_pfp_server_url:
+        profile_pic_html = f'<img src="{author_pfp_server_url}" style="width: 48px; height: 48px; border-radius: 50%; margin-right: 12px;">'
+    else:
+        # Fallback placeholder
+        profile_pic_html = '<div style="width: 48px; height: 48px; border-radius: 50%; background: #1da1f2; margin-right: 12px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 18px;">{}</div>'.format(display_author[0].upper())
     
     
     # Handle quote tweet with actual content
@@ -454,6 +500,18 @@ def render_tweet_html(post: Post) -> str:
         # Render quote tweet with actual content
         author_display = f"@{post.quote_author}" if post.quote_author else "Unknown"
         text_display = post.quote_text if post.quote_text else "[No text content]"
+        
+        # Get quote author's profile picture
+        quote_author_pfp_html = ''
+        if post.quote_author:
+            quote_author_pfp_info = author_pfps.get(post.quote_author, (None, None))
+            quote_author_pfp_server_url = quote_author_pfp_info[1] if quote_author_pfp_info else None
+            
+            if quote_author_pfp_server_url:
+                quote_author_pfp_html = f'<img src="{quote_author_pfp_server_url}" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px;">'
+            else:
+                # Fallback placeholder for quote author
+                quote_author_pfp_html = f'<div style="width: 32px; height: 32px; border-radius: 50%; background: #1da1f2; margin-right: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 12px;">{post.quote_author[0].upper()}</div>'
         
         # Handle quote tweet images
         quote_images_html = ''
@@ -465,7 +523,10 @@ def render_tweet_html(post: Post) -> str:
         
         quote_tweet_html = f'''
         <div style="border: 1px solid #e1e8ed; border-radius: 12px; padding: 12px; margin-top: 12px; background: #f7f9fa;">
-            <div style="color: #657786; font-size: 13px; margin-bottom: 8px; font-weight: bold;">💬 Quoting {author_display}</div>
+            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                {quote_author_pfp_html}
+                <div style="color: #657786; font-size: 13px; font-weight: bold;">💬 Quoting {author_display}</div>
+            </div>
             <div style="color: #14171a; font-size: 14px; line-height: 1.3; margin-bottom: 8px;">{text_display}</div>
             {quote_images_html}
             <div style="color: #1da1f2; font-size: 12px; margin-top: 8px;">
@@ -524,7 +585,7 @@ def render_tweet_html(post: Post) -> str:
     '''
 
 
-def render_email(posts: List[Post], account_list: AccountList) -> tuple[str, str]:
+def render_email(posts: List[Post], account_list: AccountList, author_pfps: Dict[str, tuple[Optional[str], Optional[str]]]) -> tuple[str, str]:
     """Render email content as text and HTML for an account list"""
     if not posts:
         return f"No new posts found for {account_list.name}.", f"<p>No new posts found for {account_list.name}.</p>"
@@ -589,7 +650,7 @@ def render_email(posts: List[Post], account_list: AccountList) -> tuple[str, str
     
     # Render all tweets chronologically (oldest first)
     for post in sorted(posts, key=lambda p: p.published, reverse=False):
-        html_parts.append(render_tweet_html(post))
+        html_parts.append(render_tweet_html(post, author_pfps))
     
     html_parts.append("""
     </div>
@@ -605,7 +666,7 @@ def render_email(posts: List[Post], account_list: AccountList) -> tuple[str, str
     return text_content, html_content
 
 
-def main(dry_run: bool, window_hours: int = None):
+def main(dry_run: bool, window_hours: int = None, no_db: bool = False):
     """Main Twitter processing function"""
     from common_utils import load_config, init_database
     
@@ -615,10 +676,14 @@ def main(dry_run: bool, window_hours: int = None):
     window_hours = window_hours or config.get('window_hours', 24)
     max_per_account = config.get('max_per_account', 10)
     
-    # Initialize database
-    init_database()
+    # Initialize database (unless in no-db mode)
+    if not no_db:
+        init_database()
     
     print(f"Processing {len(account_lists)} Twitter account list(s)...")
+    
+    # Create unique run timestamp for profile picture naming
+    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
     # Process each account list separately
     for account_list in account_lists:
@@ -633,18 +698,19 @@ def main(dry_run: bool, window_hours: int = None):
             limit = account_list.max_posts or max_per_account
             
             posts = fetch_feed(handle, window_hours, limit)
-            new_posts = [post for post in posts if is_new_post(post.id)]
+            if no_db:
+                # In no-db mode, treat all posts as new
+                new_posts = posts
+            else:
+                new_posts = [post for post in posts if is_new_post(post.id)]
             
             # Limit should already be enforced during fetch, but double-check
             if len(new_posts) > limit:
                 new_posts = new_posts[:limit]
                 print(f"Post-fetch limited to {limit} posts for @{handle}")
             
-            # Download profile picture and images for new posts
+            # Download images for new posts
             for post in new_posts:
-                # Download profile picture (once per handle per day) and upload to server
-                if post.profile_pic_url:
-                    post.profile_pic_path, post.profile_pic_server_url = download_profile_pic(handle, post.profile_pic_url)
                 
                 # Download tweet images and upload to image server
                 if post.image_urls:
@@ -682,11 +748,55 @@ def main(dry_run: bool, window_hours: int = None):
             print(f"No new posts found for {account_list.name}.")
             continue
         
-        # Save posts to database
-        save_posts(list_new_posts)
+        # Collect all unique authors and download their profile pictures
+        unique_authors = set()
+        author_pfps = {}  # author -> (local_path, server_url)
+        
+        for post in list_new_posts:
+            # Add main account
+            unique_authors.add(post.handle)
+            
+            # Add retweet author if it's a retweet
+            if post.is_retweet and post.retweet_author:
+                unique_authors.add(post.retweet_author)
+            
+            # Add quote author if it's a quote tweet
+            if post.quote_author:
+                unique_authors.add(post.quote_author)
+        
+        print(f"Downloading profile pictures for {len(unique_authors)} unique authors...")
+        
+        # Download profile pictures for all unique authors
+        for author in unique_authors:
+            # For main accounts, we might have the profile pic URL from RSS
+            known_url = None
+            for post in list_new_posts:
+                if post.handle == author and post.profile_pic_url:
+                    known_url = post.profile_pic_url
+                    break
+            
+            # Get profile pic URL (use known URL or fetch from Nitter)
+            pic_url = known_url or get_profile_pic_url_from_nitter(author)
+            
+            if pic_url:
+                local_path, server_url = download_profile_pic(author, pic_url, run_timestamp)
+                if local_path and server_url:
+                    author_pfps[author] = (local_path, server_url)
+                    print(f"Successfully downloaded and stored profile picture for @{author}")
+                else:
+                    print(f"Failed to download profile picture for @{author}")
+            else:
+                print(f"Could not get profile picture URL for @{author}")
+            
+            # Small delay to be polite to Nitter
+            time.sleep(uniform(0.3, 0.7))
+        
+        # Save posts to database (unless in no-db mode)
+        if not no_db:
+            save_posts(list_new_posts)
         
         # Render email for this account list
-        text_content, html_content = render_email(list_new_posts, account_list)
+        text_content, html_content = render_email(list_new_posts, account_list, author_pfps)
         subject = account_list.get_email_subject()
         
         if dry_run:

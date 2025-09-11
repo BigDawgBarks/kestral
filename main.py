@@ -17,6 +17,8 @@ def main():
                        help='Actually send email')
     parser.add_argument('--window', type=int, 
                        help='Override window hours from config')
+    parser.add_argument('--no-db', action='store_true',
+                       help='Skip database operations (for testing email only)')
     
     args = parser.parse_args()
     
@@ -27,7 +29,7 @@ def main():
     # Route to platform-specific implementation
     if args.platform == 'twitter':
         import twitter
-        twitter.main(dry_run=args.dry_run, window_hours=args.window)
+        twitter.main(dry_run=args.dry_run, window_hours=args.window, no_db=args.no_db)
     elif args.platform == 'discord':
         # Future implementation
         print("Discord support coming soon! Use --platform=twitter for now.")
