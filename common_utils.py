@@ -7,6 +7,7 @@ import sqlite3
 import smtplib
 import base64
 import os
+import logging
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -15,14 +16,78 @@ from typing import Optional, Dict
 from urllib.parse import urlparse
 
 import yaml
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Configuration will be loaded via load_full_config() function
 
-# Self-hosted image server configuration
-IMAGE_SERVER_PATH = os.getenv('IMAGE_SERVER_PATH')
-IMAGE_SERVER_URL = os.getenv('IMAGE_SERVER_URL')
+
+def load_full_config(config_path: str, secrets_path: str) -> Dict:
+    """Load and merge configuration from config and secrets files"""
+    # Load non-sensitive config
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Load sensitive config
+    with open(secrets_path, 'r') as f:
+        secrets = yaml.safe_load(f)
+    
+    # Merge configs - secrets override config for overlapping keys
+    def merge_dicts(base: Dict, overlay: Dict) -> Dict:
+        result = base.copy()
+        for key, value in overlay.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = merge_dicts(result[key], value)
+            else:
+                result[key] = value
+        return result
+    
+    return merge_dicts(config, secrets)
+
+
+def set_up_logging(platform: str) -> logging.Logger:
+    """Set up logging to both console and file for the specified platform"""
+    # Create logs directory if it doesn't exist
+    logs_dir = Path('logs')
+    logs_dir.mkdir(exist_ok=True)
+
+    # Generate timestamp for log filename
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    log_filename = logs_dir / f"{timestamp}_{platform}.log"
+
+    # Create logger
+    logger = logging.getLogger('newsletter')
+    logger.setLevel(logging.INFO)
+
+    # Clear any existing handlers to avoid duplicates
+    logger.handlers.clear()
+
+    # Create formatters
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s',
+                                  datefmt='%Y-%m-%d %H:%M:%S')
+
+    # Console handler (stdout)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # File handler
+    file_handler = logging.FileHandler(log_filename, encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    # Log startup info
+    logger.info(f"Newsletter run started: {platform} platform")
+
+    return logger
+
+
+def log_or_print(message: str, level: str = 'info', logger=None):
+    """Log message to logger if available, otherwise print to console"""
+    if logger:
+        getattr(logger, level)(message)
+    else:
+        print(message)
 
 
 def init_database():
@@ -94,17 +159,24 @@ def init_database():
         conn.commit()
 
 
-def send_email(text_content: str, html_content: str, subject: str = None):
+def send_email(text_content: str, html_content: str, subject: str = None, recipient_email: str = None, config: Dict = None, logger=None):
     """Send email via SMTP - generic email sender"""
-    smtp_host = os.getenv('SMTP_HOST')
-    smtp_port = int(os.getenv('SMTP_PORT', '587'))
-    smtp_user = os.getenv('SMTP_USER')
-    smtp_pass = os.getenv('SMTP_PASS')
-    mail_to = os.getenv('MAIL_TO')
-    mail_from = os.getenv('MAIL_FROM')
+    if logger is None:
+        logger = logging.getLogger('newsletter')
+
+    if not config:
+        logger.error("Configuration required for sending email")
+        return
+        
+    smtp_host = config.get('email', {}).get('smtp_host')
+    smtp_port = config.get('email', {}).get('smtp_port', 587)
+    smtp_user = config.get('email', {}).get('smtp_user')
+    smtp_pass = config.get('email', {}).get('smtp_pass')
+    mail_to = recipient_email
+    mail_from = config.get('email', {}).get('mail_from')
     
     if not all([smtp_host, smtp_user, smtp_pass, mail_to, mail_from]):
-        print("Error: Missing email configuration in .env file")
+        logger.error("Missing email configuration in config files")
         return
     
     # Use provided subject or default
@@ -127,9 +199,9 @@ def send_email(text_content: str, html_content: str, subject: str = None):
             server.starttls()
             server.login(smtp_user, smtp_pass)
             server.send_message(msg)
-        print(f"Email sent successfully to {mail_to}")
+        logger.info(f"Email sent successfully to {mail_to}")
     except Exception as e:
-        print(f"Error sending email: {e}")
+        logger.error(f"Error sending email: {e}")
 
 
 def image_to_base64(image_path: str) -> Optional[str]:
@@ -157,7 +229,8 @@ def image_to_base64(image_path: str) -> Optional[str]:
         return f"data:{mime_type};base64,{base64_data}"
     
     except Exception as e:
-        print(f"Failed to convert {image_path} to base64: {e}")
+        logger = logging.getLogger('newsletter')
+        logger.warning(f"Failed to convert {image_path} to base64: {e}")
         return None
 
 
@@ -185,13 +258,23 @@ def get_image_extension(url: str, headers: Dict[str, str]) -> str:
     return '.jpg'  # Default fallback
 
 
-def upload_to_image_server(image_path: str) -> Optional[str]:
+def upload_to_image_server(image_path: str, config: Dict = None, logger=None) -> Optional[str]:
     """Copy image to self-hosted server and return the URL"""
+    if logger is None:
+        logger = logging.getLogger('newsletter')
+
     if not image_path or not Path(image_path).exists():
         return None
+
+    if not config:
+        logger.warning("No config provided, skipping image server upload")
+        return None
+        
+    image_server_path = config.get('image_server', {}).get('path')
+    image_server_url = config.get('image_server', {}).get('url')
     
-    if not IMAGE_SERVER_PATH or not IMAGE_SERVER_URL:
-        print("Warning: IMAGE_SERVER_PATH or IMAGE_SERVER_URL not set, skipping upload")
+    if not image_server_path or not image_server_url:
+        logger.warning("IMAGE_SERVER_PATH or IMAGE_SERVER_URL not set, skipping upload")
         return None
     
     try:
@@ -200,7 +283,7 @@ def upload_to_image_server(image_path: str) -> Optional[str]:
         
         # Create date-based subdirectory
         date_folder = datetime.now().strftime('%Y-%m-%d')
-        dest_dir = Path(IMAGE_SERVER_PATH) / date_folder
+        dest_dir = Path(image_server_path) / date_folder
         dest_dir.mkdir(parents=True, exist_ok=True)
         
         # Generate filename (sanitize for web URLs)
@@ -214,16 +297,16 @@ def upload_to_image_server(image_path: str) -> Optional[str]:
         os.chmod(dest_path, 0o644)
         
         # Return public URL
-        public_url = f"{IMAGE_SERVER_URL}/{date_folder}/{filename}"
-        print(f"Uploaded {filename} to image server: {public_url}")
+        public_url = f"{image_server_url}/{date_folder}/{filename}"
+        logger.info(f"Uploaded {filename} to image server: {public_url}")
         return public_url
-        
+
     except Exception as e:
-        print(f"Failed to upload {image_path} to image server: {e}")
+        logger.warning(f"Failed to upload {image_path} to image server: {e}")
         return None
 
 
-def load_config() -> Dict:
-    """Load configuration from accounts.yaml"""
+def load_accounts_config() -> Dict:
+    """Load accounts configuration from accounts.yaml"""
     with open('accounts.yaml', 'r') as f:
         return yaml.safe_load(f)

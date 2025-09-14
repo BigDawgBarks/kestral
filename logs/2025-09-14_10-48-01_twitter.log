@@ -1,0 +1,59 @@
+2025-09-14 10:48:01 [INFO] Newsletter run started: twitter platform
+2025-09-14 10:48:01 [INFO] Command: --platform=twitter --send --to wmichael.cs@gmail.com --window 2 --no-db
+2025-09-14 10:48:01 [INFO] Processing 4 Twitter account list(s)...
+2025-09-14 10:48:01 [INFO] Processing teortaxestex
+2025-09-14 10:48:01 [INFO] Fetching feed for @teortaxestex...
+2025-09-14 10:48:01 [INFO] Fetching RSS pages until we find non-retweet older than 2h cutoff...
+2025-09-14 10:48:02 [INFO] Found non-retweet from 2025-09-14 15:31 (older than cutoff), stopping pagination
+2025-09-14 10:48:02 [INFO] Completed after 1 page(s), found 0 tweets within 2h window
+2025-09-14 10:48:02 [INFO] Found 0 new posts from @teortaxestex
+2025-09-14 10:48:02 [INFO] No new posts found for teortaxestex
+2025-09-14 10:48:02 [INFO] Processing zephyr_z9
+2025-09-14 10:48:02 [INFO] Fetching feed for @zephyr_z9...
+2025-09-14 10:48:02 [INFO] Fetching RSS pages until we find non-retweet older than 2h cutoff...
+2025-09-14 10:48:02 [INFO] Found non-retweet from 2025-09-14 15:46 (older than cutoff), stopping pagination
+2025-09-14 10:48:02 [INFO] Completed after 1 page(s), found 3 tweets within 2h window
+2025-09-14 10:48:03 [INFO] Uploaded zephyr_z9_1967281087547346970_m_1.jpg to image server: https://burger-nation.freemyip.com:4611/2025-09-14/zephyr_z9_1967281087547346970_m_1.jpg
+2025-09-14 10:48:03 [INFO] Found 3 new posts from @zephyr_z9
+2025-09-14 10:48:03 [INFO] Downloading profile pictures for 2 unique authors...
+2025-09-14 10:48:03 [INFO] Uploaded zephyr_z9_profile_20250914_104801.jpg to image server: https://burger-nation.freemyip.com:4611/2025-09-14/zephyr_z9_profile_20250914_104801.jpg
+2025-09-14 10:48:03 [INFO] Downloaded profile picture for @zephyr_z9
+2025-09-14 10:48:03 [INFO] Successfully downloaded and stored profile picture for @zephyr_z9
+2025-09-14 10:48:05 [INFO] Uploaded xlr8harder_profile_20250914_104801.jpg to image server: https://burger-nation.freemyip.com:4611/2025-09-14/xlr8harder_profile_20250914_104801.jpg
+2025-09-14 10:48:05 [INFO] Downloaded profile picture for @xlr8harder
+2025-09-14 10:48:05 [INFO] Successfully downloaded and stored profile picture for @xlr8harder
+2025-09-14 10:48:07 [INFO] Email sent successfully to wmichael.cs@gmail.com
+2025-09-14 10:48:07 [INFO] zephyr_z9 newsletter sent with 3 posts!
+2025-09-14 10:48:07 [INFO] Processing spandrell4
+2025-09-14 10:48:07 [INFO] Fetching feed for @spandrell4...
+2025-09-14 10:48:07 [INFO] Fetching RSS pages until we find non-retweet older than 2h cutoff...
+2025-09-14 10:48:07 [INFO] Found non-retweet from 2025-09-14 14:08 (older than cutoff), stopping pagination
+2025-09-14 10:48:07 [INFO] Completed after 1 page(s), found 2 tweets within 2h window
+2025-09-14 10:48:07 [INFO] Fetching quoted tweet content from http://10.8.0.1:8080/arctotherium42/status/1967241792488898614#m
+2025-09-14 10:48:08 [INFO] Uploaded spandrell4_1967281196280467531_m_quote_1.webp to image server: https://burger-nation.freemyip.com:4611/2025-09-14/spandrell4_1967281196280467531_m_quote_1.webp
+2025-09-14 10:48:08 [INFO] Uploaded spandrell4_1967281196280467531_m_quote_2.webp to image server: https://burger-nation.freemyip.com:4611/2025-09-14/spandrell4_1967281196280467531_m_quote_2.webp
+2025-09-14 10:48:08 [INFO] Uploaded spandrell4_1967281196280467531_m_quote_3.webp to image server: https://burger-nation.freemyip.com:4611/2025-09-14/spandrell4_1967281196280467531_m_quote_3.webp
+2025-09-14 10:48:09 [INFO] Found 2 new posts from @spandrell4
+2025-09-14 10:48:10 [INFO] Downloading profile pictures for 2 unique authors...
+2025-09-14 10:48:11 [INFO] Uploaded arctotherium42_profile_20250914_104801.jpg to image server: https://burger-nation.freemyip.com:4611/2025-09-14/arctotherium42_profile_20250914_104801.jpg
+2025-09-14 10:48:11 [INFO] Downloaded profile picture for @arctotherium42
+2025-09-14 10:48:11 [INFO] Successfully downloaded and stored profile picture for @arctotherium42
+2025-09-14 10:48:12 [INFO] Uploaded spandrell4_profile_20250914_104801.jpg to image server: https://burger-nation.freemyip.com:4611/2025-09-14/spandrell4_profile_20250914_104801.jpg
+2025-09-14 10:48:12 [INFO] Downloaded profile picture for @spandrell4
+2025-09-14 10:48:12 [INFO] Successfully downloaded and stored profile picture for @spandrell4
+2025-09-14 10:48:14 [INFO] Email sent successfully to wmichael.cs@gmail.com
+2025-09-14 10:48:14 [INFO] spandrell4 newsletter sent with 2 posts!
+2025-09-14 10:48:14 [INFO] Processing LindyMan
+2025-09-14 10:48:14 [INFO] Fetching feed for @paulskallas...
+2025-09-14 10:48:14 [INFO] Fetching RSS pages until we find non-retweet older than 2h cutoff...
+2025-09-14 10:48:14 [INFO] Found non-retweet from 2025-09-14 11:15 (older than cutoff), stopping pagination
+2025-09-14 10:48:14 [INFO] Completed after 1 page(s), found 1 tweets within 2h window
+2025-09-14 10:48:14 [INFO] Found 1 new posts from @paulskallas
+2025-09-14 10:48:15 [INFO] Downloading profile pictures for 1 unique authors...
+2025-09-14 10:48:15 [INFO] Uploaded paulskallas_profile_20250914_104801.jpg to image server: https://burger-nation.freemyip.com:4611/2025-09-14/paulskallas_profile_20250914_104801.jpg
+2025-09-14 10:48:15 [INFO] Downloaded profile picture for @paulskallas
+2025-09-14 10:48:15 [INFO] Successfully downloaded and stored profile picture for @paulskallas
+2025-09-14 10:48:16 [INFO] Email sent successfully to wmichael.cs@gmail.com
+2025-09-14 10:48:16 [INFO] LindyMan newsletter sent with 1 posts!
+2025-09-14 10:48:16 [INFO] All Twitter newsletters processed!
+2025-09-14 10:48:16 [INFO] Newsletter processing complete!

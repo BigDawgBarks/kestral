@@ -1,0 +1,17 @@
+# Newsletter system configuration (non-sensitive)
+
+nitter:
+  base_url: "http://10.8.0.1:8080"
+
+email:
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+
+image_server:
+  path: "/var/www/newsletter-images"
+  url: "https://burger-nation.freemyip.com:4611"
+
+newsletter:
+  window_hours: 36
+  max_per_account: 250
+  timezone: "America/Los_Angeles"

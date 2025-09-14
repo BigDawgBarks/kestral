@@ -17,7 +17,7 @@ import httpx
 import os
 
 from bs4 import BeautifulSoup
-from common_utils import send_email, upload_to_image_server, get_image_extension
+from common_utils import send_email, upload_to_image_server, get_image_extension, log_or_print
 
 
 
@@ -47,7 +47,7 @@ class Post:
         self.summary = summary
         self.published = published
         self.nitter_url = nitter_url
-        self.x_url = nitter_url.replace(os.getenv('NITTER_BASE_URL', ''), 'https://x.com')
+        self._x_url = None  # Will be set via set_x_url method
         self.image_urls = image_urls or []
         self.image_paths = []
         self.server_image_urls = []  # Image server URLs for embedded images
@@ -66,6 +66,21 @@ class Post:
         self.quote_author = None
         self.quote_text = None
         self.quote_image_urls = []
+    
+    def set_x_url(self, config: Dict):
+        """Set the x.com URL by replacing the Nitter base URL"""
+        base_url = config.get('nitter', {}).get('base_url', '')
+        self.x_url = self.nitter_url.replace(base_url, 'https://x.com')
+    
+    @property
+    def x_url(self):
+        """Get the x.com URL"""
+        return self._x_url
+    
+    @x_url.setter
+    def x_url(self, value):
+        """Set the x.com URL"""
+        self._x_url = value
     
     def _extract_quote_tweet_url(self) -> Optional[str]:
         """Extract quote tweet URL from description"""
@@ -111,7 +126,7 @@ def parse_account_lists(config: Dict) -> List[AccountList]:
     return account_lists
 
 
-def fetch_quoted_tweet_content(quote_url: str) -> tuple[Optional[str], Optional[str], List[str]]:
+def fetch_quoted_tweet_content(quote_url: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str], List[str]]:
     """Fetch quoted tweet content from Nitter page and return (author, text, image_urls)"""
     if not quote_url:
         return None, None, []
@@ -148,20 +163,20 @@ def fetch_quoted_tweet_content(quote_url: str) -> tuple[Optional[str], Optional[
             src = img.get('src')
             if src and src.startswith('/pic/'):
                 # Convert relative URL to absolute
-                base_url = os.getenv('NITTER_BASE_URL', '')
+                base_url = config.get('nitter', {}).get('base_url', '')
                 full_url = base_url + src
                 image_urls.append(full_url)
         
         return author, text, image_urls
         
     except Exception as e:
-        print(f"Failed to fetch quoted tweet content from {quote_url}: {e}")
+        log_or_print(f"Failed to fetch quoted tweet content from {quote_url}: {e}", 'warning', logger)
         return None, None, []
 
 
-def get_profile_pic_url_from_nitter(handle: str) -> Optional[str]:
+def get_profile_pic_url_from_nitter(handle: str, config: Dict, logger=None) -> Optional[str]:
     """Fetch profile picture URL from Nitter user page"""
-    base_url = os.getenv('NITTER_BASE_URL')
+    base_url = config.get('nitter', {}).get('base_url')
     if not base_url:
         return None
     
@@ -178,7 +193,7 @@ def get_profile_pic_url_from_nitter(handle: str) -> Optional[str]:
         
         # If no profile content found, account might not exist or be suspended
         if not profile_card and not timeline:
-            print(f"Profile not accessible for @{handle} (account may not exist or be suspended)")
+            log_or_print(f"Profile not accessible for @{handle} (account may not exist or be suspended)", 'warning', logger)
             return None
         
         # Try multiple selectors for avatar image (profile picture, not banner)
@@ -206,11 +221,11 @@ def get_profile_pic_url_from_nitter(handle: str) -> Optional[str]:
         return None
         
     except Exception as e:
-        print(f"Failed to fetch profile pic URL for @{handle}: {e}")
+        log_or_print(f"Failed to fetch profile pic URL for @{handle}: {e}", 'warning', logger)
         return None
 
 
-def download_profile_pic(handle: str, profile_pic_url: str, run_timestamp: str) -> tuple[Optional[str], Optional[str]]:
+def download_profile_pic(handle: str, profile_pic_url: str, run_timestamp: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str]]:
     """Download profile picture with unique naming and return (local_path, server_url)"""
     if not profile_pic_url:
         return None, None
@@ -231,17 +246,17 @@ def download_profile_pic(handle: str, profile_pic_url: str, run_timestamp: str) 
         filepath.write_bytes(response.content)
         
         # Upload to image server
-        server_url = upload_to_image_server(str(filepath))
+        server_url = upload_to_image_server(str(filepath), config)
         
-        print(f"Downloaded profile picture for @{handle}")
+        log_or_print(f"Downloaded profile picture for @{handle}", 'info', logger)
         return str(filepath), server_url
         
     except Exception as e:
-        print(f"Failed to download profile pic for @{handle}: {e}")
+        log_or_print(f"Failed to download profile pic for @{handle}: {e}", 'warning', logger)
         return None, None
 
 
-def download_images(tweet_id: str, handle: str, image_urls: List[str]) -> tuple[List[str], List[str]]:
+def download_images(tweet_id: str, handle: str, image_urls: List[str], config: Dict, logger=None) -> tuple[List[str], List[str]]:
     """Download images and return (local_paths, server_urls)"""
     if not image_urls:
         return [], []
@@ -266,21 +281,21 @@ def download_images(tweet_id: str, handle: str, image_urls: List[str]) -> tuple[
             local_paths.append(str(filepath))
             
             # Upload to image server
-            server_url = upload_to_image_server(str(filepath))
+            server_url = upload_to_image_server(str(filepath), config)
             if server_url:
                 server_urls.append(server_url)
             
         except Exception as e:
-            print(f"Failed to download {url}: {e}")
+            log_or_print(f"Failed to download {url}: {e}", 'warning', logger)
     
     return local_paths, server_urls
 
 
-def fetch_feed(handle: str, window_hours: int, max_posts: int = None) -> List[Post]:
+def fetch_feed(handle: str, window_hours: int, config: Dict, max_posts: int = None, logger=None) -> List[Post]:
     """Fetch RSS feed for a handle with pagination until we find old non-retweet"""
-    base_url = os.getenv('NITTER_BASE_URL')
+    base_url = config.get('nitter', {}).get('base_url')
     if not base_url:
-        raise ValueError("NITTER_BASE_URL not set in environment")
+        raise ValueError("NITTER_BASE_URL not set in config")
     
     posts = []
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=window_hours)
@@ -289,7 +304,7 @@ def fetch_feed(handle: str, window_hours: int, max_posts: int = None) -> List[Po
     max_pages = 10  # Safety limit to prevent infinite loops
     profile_pic_url = None
     
-    print(f"  Fetching RSS pages until we find non-retweet older than {window_hours}h cutoff...")
+    log_or_print(f"Fetching RSS pages until we find non-retweet older than {window_hours}h cutoff...", 'info', logger)
     
     while page_count < max_pages:
         # Build URL with cursor if we have one
@@ -309,7 +324,7 @@ def fetch_feed(handle: str, window_hours: int, max_posts: int = None) -> List[Po
             page_count += 1
             
             if feed.bozo:
-                print(f"    Warning: Feed parsing issues for {handle} on page {page_count}")
+                log_or_print(f"Feed parsing issues for {handle} on page {page_count}", 'warning', logger)
             
             # Extract profile picture from feed metadata (only from first page)
             if page_count == 1 and hasattr(feed.feed, 'image') and hasattr(feed.feed.image, 'url'):
@@ -321,7 +336,7 @@ def fetch_feed(handle: str, window_hours: int, max_posts: int = None) -> List[Po
             hit_max_posts = False
             
             if not feed.entries:
-                print(f"    No more entries found on page {page_count}")
+                log_or_print(f"No more entries found on page {page_count}", 'info', logger)
                 break
             
             for entry in feed.entries:
@@ -367,6 +382,7 @@ def fetch_feed(handle: str, window_hours: int, max_posts: int = None) -> List[Po
                     profile_pic_url=profile_pic_url,
                     raw_description=description
                 )
+                post.set_x_url(config)
                 
                 # Handle retweets - get original author's info
                 if post.is_retweet:
@@ -379,7 +395,7 @@ def fetch_feed(handle: str, window_hours: int, max_posts: int = None) -> List[Po
                 # Check stopping condition: non-retweet older than cutoff
                 if not post.is_retweet and published < cutoff_time:
                     found_old_non_retweet = True
-                    print(f"    Found non-retweet from {published.strftime('%Y-%m-%d %H:%M')} (older than cutoff), stopping pagination")
+                    log_or_print(f"Found non-retweet from {published.strftime('%Y-%m-%d %H:%M')} (older than cutoff), stopping pagination", 'info', logger)
                     break
                 
                 # If tweet is within window, add it to results
@@ -390,7 +406,7 @@ def fetch_feed(handle: str, window_hours: int, max_posts: int = None) -> List[Po
                     # Check if we've hit the max posts limit
                     if max_posts and len(posts) >= max_posts:
                         hit_max_posts = True
-                        print(f"    Hit max posts limit ({max_posts}), stopping pagination")
+                        log_or_print(f"Hit max posts limit ({max_posts}), stopping pagination", 'info', logger)
                         break
                 
             # Stop pagination if we found old non-retweet, hit max posts, or no cursor for next page
@@ -398,18 +414,18 @@ def fetch_feed(handle: str, window_hours: int, max_posts: int = None) -> List[Po
                 break
             
             cursor = next_cursor
-            print(f"    Page {page_count}: found {len([p for p in posts if p.handle == handle])} tweets within window, continuing...")
+            log_or_print(f"Page {page_count}: found {len([p for p in posts if p.handle == handle])} tweets within window, continuing...", 'info', logger)
             
             # Be polite - small delay between pages
             time.sleep(uniform(0.5, 1.0))
             
         except Exception as e:
-            print(f"    Error fetching page {page_count} for {handle}: {e}")
+            log_or_print(f"Error fetching page {page_count} for {handle}: {e}", 'error', logger)
             break
     
     # Filter posts to only this handle (in case of any issues)
     handle_posts = [post for post in posts if post.handle == handle]
-    print(f"  Completed after {page_count} page(s), found {len(handle_posts)} tweets within {window_hours}h window")
+    log_or_print(f"Completed after {page_count} page(s), found {len(handle_posts)} tweets within {window_hours}h window", 'info', logger)
     
     return handle_posts
 
@@ -666,38 +682,45 @@ def render_email(posts: List[Post], account_list: AccountList, author_pfps: Dict
     return text_content, html_content
 
 
-def main(dry_run: bool, window_hours: int = None, no_db: bool = False):
+def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient_email: str = None, config_path: str = None, secrets_path: str = None, logger=None):
     """Main Twitter processing function"""
-    from common_utils import load_config, init_database
+    import logging
+    from common_utils import load_full_config, load_accounts_config, init_database
+
+    if logger is None:
+        logger = logging.getLogger('newsletter')
     
-    # Load configuration and parse account lists
-    config = load_config()
-    account_lists = parse_account_lists(config)
-    window_hours = window_hours or config.get('window_hours', 24)
-    max_per_account = config.get('max_per_account', 10)
+    # Load configuration
+    full_config = load_full_config(config_path, secrets_path)
+    accounts_config = load_accounts_config()
+    
+    # Parse account lists and settings
+    account_lists = parse_account_lists(accounts_config)
+    window_hours = window_hours or full_config.get('newsletter', {}).get('window_hours', 24)
+    max_per_account = full_config.get('newsletter', {}).get('max_per_account', 10)
     
     # Initialize database (unless in no-db mode)
     if not no_db:
         init_database()
     
-    print(f"Processing {len(account_lists)} Twitter account list(s)...")
+    logger.info(f"Processing {len(account_lists)} Twitter account list(s)...")
     
     # Create unique run timestamp for profile picture naming
     run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
     # Process each account list separately
     for account_list in account_lists:
-        print(f"\n--- Processing {account_list.name} ---")
+        logger.info(f"Processing {account_list.name}")
         
         # Collect new posts for this account list
         list_new_posts = []
         for handle in account_list.accounts:
-            print(f"Fetching feed for @{handle}...")
+            logger.info(f"Fetching feed for @{handle}...")
             
             # Determine limit (use account list override or global setting)
             limit = account_list.max_posts or max_per_account
             
-            posts = fetch_feed(handle, window_hours, limit)
+            posts = fetch_feed(handle, window_hours, full_config, limit, logger=logger)
             if no_db:
                 # In no-db mode, treat all posts as new
                 new_posts = posts
@@ -707,7 +730,7 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False):
             # Limit should already be enforced during fetch, but double-check
             if len(new_posts) > limit:
                 new_posts = new_posts[:limit]
-                print(f"Post-fetch limited to {limit} posts for @{handle}")
+                logger.info(f"Post-fetch limited to {limit} posts for @{handle}")
             
             # Download images for new posts
             for post in new_posts:
@@ -717,20 +740,22 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False):
                     post.image_paths, post.server_image_urls = download_images(
                         post.id.split('/')[-1],  # Use last part of ID as tweet ID
                         handle, 
-                        post.image_urls
+                        post.image_urls,
+                        full_config
                     )
                 
                 # Fetch quoted tweet content if quote tweet exists
                 if post.quote_tweet_url:
-                    print(f"Fetching quoted tweet content from {post.quote_tweet_url}")
-                    post.quote_author, post.quote_text, post.quote_image_urls = fetch_quoted_tweet_content(post.quote_tweet_url)
+                    logger.info(f"Fetching quoted tweet content from {post.quote_tweet_url}")
+                    post.quote_author, post.quote_text, post.quote_image_urls = fetch_quoted_tweet_content(post.quote_tweet_url, full_config, logger)
                     
                     # Download quoted tweet images and upload to image server
                     if post.quote_image_urls:
                         quote_paths, quote_server_urls = download_images(
                             post.id.split('/')[-1] + "_quote",  # Add _quote suffix to distinguish from regular images
                             handle, 
-                            post.quote_image_urls
+                            post.quote_image_urls,
+                            full_config
                         )
                         # Replace the Nitter URLs with server URLs for email display
                         post.quote_image_urls = quote_server_urls
@@ -739,13 +764,13 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False):
                     time.sleep(uniform(0.5, 1.0))
             
             list_new_posts.extend(new_posts)
-            print(f"Found {len(new_posts)} new posts from @{handle}")
+            logger.info(f"Found {len(new_posts)} new posts from @{handle}")
             
             # Be polite - sleep between feeds
             time.sleep(uniform(0.3, 0.8))
         
         if not list_new_posts:
-            print(f"No new posts found for {account_list.name}.")
+            logger.info(f"No new posts found for {account_list.name}")
             continue
         
         # Collect all unique authors and download their profile pictures
@@ -764,7 +789,7 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False):
             if post.quote_author:
                 unique_authors.add(post.quote_author)
         
-        print(f"Downloading profile pictures for {len(unique_authors)} unique authors...")
+        logger.info(f"Downloading profile pictures for {len(unique_authors)} unique authors...")
         
         # Download profile pictures for all unique authors
         for author in unique_authors:
@@ -776,17 +801,17 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False):
                     break
             
             # Get profile pic URL (use known URL or fetch from Nitter)
-            pic_url = known_url or get_profile_pic_url_from_nitter(author)
+            pic_url = known_url or get_profile_pic_url_from_nitter(author, full_config, logger)
             
             if pic_url:
-                local_path, server_url = download_profile_pic(author, pic_url, run_timestamp)
+                local_path, server_url = download_profile_pic(author, pic_url, run_timestamp, full_config, logger)
                 if local_path and server_url:
                     author_pfps[author] = (local_path, server_url)
-                    print(f"Successfully downloaded and stored profile picture for @{author}")
+                    logger.info(f"Successfully downloaded and stored profile picture for @{author}")
                 else:
-                    print(f"Failed to download profile picture for @{author}")
+                    logger.warning(f"Failed to download profile picture for @{author}")
             else:
-                print(f"Could not get profile picture URL for @{author}")
+                logger.warning(f"Could not get profile picture URL for @{author}")
             
             # Small delay to be polite to Nitter
             time.sleep(uniform(0.3, 0.7))
@@ -800,17 +825,17 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False):
         subject = account_list.get_email_subject()
         
         if dry_run:
-            print(f"\n" + "="*60)
-            print(f"DRY RUN - {account_list.name} Newsletter:")
-            print("="*60)
-            print(f"Subject: {subject}")
-            print(f"Posts: {len(list_new_posts)}")
-            print("-"*30)
-            print(text_content[:500] + "..." if len(text_content) > 500 else text_content)
-            print("\n" + "="*60)
-            print(f"Would email {len(list_new_posts)} posts to {os.getenv('MAIL_TO', 'unknown')}")
+            logger.info("=" * 60)
+            logger.info(f"DRY RUN - {account_list.name} Newsletter")
+            logger.info("=" * 60)
+            logger.info(f"Subject: {subject}")
+            logger.info(f"Posts: {len(list_new_posts)}")
+            logger.info("-" * 30)
+            logger.info(text_content[:500] + "..." if len(text_content) > 500 else text_content)
+            logger.info("=" * 60)
+            logger.info(f"Would email {len(list_new_posts)} posts to {recipient_email}")
         else:
-            send_email(text_content, html_content, subject)
-            print(f"{account_list.name} newsletter sent with {len(list_new_posts)} posts!")
+            send_email(text_content, html_content, subject, recipient_email, full_config, logger=logger)
+            logger.info(f"{account_list.name} newsletter sent with {len(list_new_posts)} posts!")
     
-    print("\nAll Twitter newsletters processed!")
+    logger.info("All Twitter newsletters processed!")
