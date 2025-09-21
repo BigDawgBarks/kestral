@@ -27,7 +27,9 @@ def main():
                        help='Path to config file (default: ./config.yaml)')
     parser.add_argument('--secrets', default='/home/mywang/Code/secrets/kestral.yaml',
                        help='Path to secrets file (default: /home/mywang/Code/secrets/kestral.yaml)')
-    
+    parser.add_argument('--account-lists', nargs='*',
+                       help='Process only specified account lists (default: all)')
+
     args = parser.parse_args()
 
     # Set up logging for this platform
@@ -46,7 +48,7 @@ def main():
         import twitter
         twitter.main(dry_run=args.dry_run, window_hours=args.window, no_db=args.no_db,
                     recipient_email=args.to, config_path=args.config, secrets_path=args.secrets,
-                    logger=logger)
+                    account_lists_filter=getattr(args, 'account_lists', None), logger=logger)
     elif args.platform == 'discord':
         # Future implementation
         logger.info("Discord support coming soon! Use --platform=twitter for now.")

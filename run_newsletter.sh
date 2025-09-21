@@ -20,7 +20,7 @@ source .venv/bin/activate || {
 }
 
 # Run the newsletter with full error capture
-python main.py --platform=twitter --send --to wmichael.cs@gmail.com --window 36  2>&1 | tee -a /tmp/newsletter_cron.log
+python main.py --platform=twitter --send --to wmichael.cs@gmail.com --window 50  2>&1 | tee -a /tmp/newsletter_cron.log
 
 # Log completion
 echo "Newsletter run completed at $(date)" >> /tmp/newsletter_cron.log

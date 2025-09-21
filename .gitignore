@@ -21,6 +21,9 @@ newsletter.db-journal
 # Downloaded images
 images/
 
+# Logs
+logs/
+
 # IDE
 .vscode/
 .idea/

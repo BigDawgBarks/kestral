@@ -17,6 +17,7 @@ import httpx
 import os
 
 from bs4 import BeautifulSoup
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from common_utils import send_email, upload_to_image_server, get_image_extension, log_or_print
 
 
@@ -132,9 +133,18 @@ def fetch_quoted_tweet_content(quote_url: str, config: Dict, logger=None) -> tup
         return None, None, []
     
     try:
-        response = httpx.get(quote_url, timeout=15)
-        response.raise_for_status()
-        
+        # Use retry decorator for HTTP request with exponential backoff
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException))
+        )
+        def fetch_quote_page():
+            response = httpx.get(quote_url, timeout=15)
+            response.raise_for_status()
+            return response
+
+        response = fetch_quote_page()
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # Extract quoted tweet author
@@ -182,9 +192,19 @@ def get_profile_pic_url_from_nitter(handle: str, config: Dict, logger=None) -> O
     
     try:
         user_url = f"{base_url}/{handle}"
-        response = httpx.get(user_url, timeout=10)
-        response.raise_for_status()
-        
+
+        # Use retry decorator for HTTP request with exponential backoff
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException))
+        )
+        def fetch_user_page():
+            response = httpx.get(user_url, timeout=10)
+            response.raise_for_status()
+            return response
+
+        response = fetch_user_page()
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # Check if the page contains actual profile content
@@ -235,9 +255,18 @@ def download_profile_pic(handle: str, profile_pic_url: str, run_timestamp: str, 
     images_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        response = httpx.get(profile_pic_url, timeout=10)
-        response.raise_for_status()
-        
+        # Use retry decorator for HTTP request with exponential backoff
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException))
+        )
+        def fetch_profile_image():
+            response = httpx.get(profile_pic_url, timeout=10)
+            response.raise_for_status()
+            return response
+
+        response = fetch_profile_image()
         ext = get_image_extension(profile_pic_url, response.headers)
         # Use run timestamp to ensure uniqueness across runs
         filename = f"{handle}_profile_{run_timestamp}{ext}"
@@ -270,21 +299,30 @@ def download_images(tweet_id: str, handle: str, image_urls: List[str], config: D
     
     for i, url in enumerate(image_urls):
         try:
-            response = httpx.get(url, timeout=10)
-            response.raise_for_status()
-            
+            # Use retry decorator for HTTP request with exponential backoff
+            @retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=1, max=10),
+                retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException))
+            )
+            def fetch_image():
+                response = httpx.get(url, timeout=10)
+                response.raise_for_status()
+                return response
+
+            response = fetch_image()
             ext = get_image_extension(url, response.headers)
             filename = f"{handle}_{tweet_id}_{i+1}{ext}"
             filepath = images_dir / filename
-            
+
             filepath.write_bytes(response.content)
             local_paths.append(str(filepath))
-            
+
             # Upload to image server
             server_url = upload_to_image_server(str(filepath), config)
             if server_url:
                 server_urls.append(server_url)
-            
+
         except Exception as e:
             log_or_print(f"Failed to download {url}: {e}", 'warning', logger)
     
@@ -314,12 +352,22 @@ def fetch_feed(handle: str, window_hours: int, config: Dict, max_posts: int = No
             feed_url = f"{base_url}/{handle}/rss"
         
         try:
-            response = httpx.get(feed_url, timeout=30)
-            response.raise_for_status()
-            
+            # Use retry decorator for HTTP request with exponential backoff
+            @retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=1, max=10),
+                retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException))
+            )
+            def fetch_rss_page():
+                response = httpx.get(feed_url, timeout=30)
+                response.raise_for_status()
+                return response
+
+            response = fetch_rss_page()
+
             # Get cursor for next page from min-id header
             next_cursor = response.headers.get('min-id')
-            
+
             feed = feedparser.parse(response.content)
             page_count += 1
             
@@ -682,7 +730,7 @@ def render_email(posts: List[Post], account_list: AccountList, author_pfps: Dict
     return text_content, html_content
 
 
-def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient_email: str = None, config_path: str = None, secrets_path: str = None, logger=None):
+def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient_email: str = None, config_path: str = None, secrets_path: str = None, account_lists_filter: List[str] = None, logger=None):
     """Main Twitter processing function"""
     import logging
     from common_utils import load_full_config, load_accounts_config, init_database
@@ -696,6 +744,26 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
     
     # Parse account lists and settings
     account_lists = parse_account_lists(accounts_config)
+
+    # Filter account lists if specified
+    if account_lists_filter:
+        filtered_lists = []
+        for account_list in account_lists:
+            if account_list.name in account_lists_filter:
+                filtered_lists.append(account_list)
+
+        # Log which lists were found/not found
+        found_names = [al.name for al in filtered_lists]
+        not_found = [name for name in account_lists_filter if name not in found_names]
+
+        if not_found:
+            logger.warning(f"Account lists not found: {', '.join(not_found)}")
+        if not filtered_lists:
+            logger.error(f"No matching account lists found for: {', '.join(account_lists_filter)}")
+            return
+
+        account_lists = filtered_lists
+        logger.info(f"Filtered to {len(account_lists)} account list(s): {', '.join(found_names)}")
     window_hours = window_hours or full_config.get('newsletter', {}).get('window_hours', 24)
     max_per_account = full_config.get('newsletter', {}).get('max_per_account', 10)
     

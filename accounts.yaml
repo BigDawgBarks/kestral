@@ -7,6 +7,8 @@ account_lists:
     accounts: ["spandrell4"]
   - name: "LindyMan"
     accounts: ["paulskallas"]
+  - name: "nearcyan"
+    accounts: ["nearcyan"]
 
 # Global configuration
 window_hours: 72       # lookback window for new tweets (24 * 3 days = 72 hours)
