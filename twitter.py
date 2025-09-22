@@ -149,16 +149,16 @@ def fetch_quoted_tweet_content(quote_url: str, config: Dict, logger=None) -> tup
         
         # Extract quoted tweet author
         author = None
-        author_elem = soup.select_one('.tweet-header .username')
+        author_elem = soup.select_one('.main-tweet .tweet-header .username')
         if author_elem:
             author = author_elem.get_text().strip()
             # Remove @ if present since we'll add it back in rendering
             if author.startswith('@'):
                 author = author[1:]
-        
+
         # Extract quoted tweet text
         text = None
-        text_elem = soup.select_one('.tweet-content')
+        text_elem = soup.select_one('.main-tweet .tweet-content')
         if text_elem:
             # Remove quote tweet links and clean up
             for link in text_elem.select('a.quote-link'):
