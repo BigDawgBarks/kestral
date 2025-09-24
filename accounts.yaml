@@ -11,6 +11,14 @@ account_lists:
     accounts: ["nearcyan"]
   - name: "kitten_beloved"
     accounts: ["kitten_beloved"]
+  - name: "roon"
+    accounts: ["tszzl"]
+  - name: "patio11"
+    accounts: ["patio11"]
+  - name: "howlingmutant0"
+    accounts: ["howlingmutant0"]
+  - name: "zeta_globin"
+    accounts: ["zeta_globin", "snuppydogg"]
 
 # Global configuration
 window_hours: 72       # lookback window for new tweets (24 * 3 days = 72 hours)

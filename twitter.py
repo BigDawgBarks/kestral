@@ -748,22 +748,45 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
     # Filter account lists if specified
     if account_lists_filter:
         filtered_lists = []
-        for account_list in account_lists:
-            if account_list.name in account_lists_filter:
-                filtered_lists.append(account_list)
+        adhoc_accounts = []
 
-        # Log which lists were found/not found
-        found_names = [al.name for al in filtered_lists]
-        not_found = [name for name in account_lists_filter if name not in found_names]
+        for requested_name in account_lists_filter:
+            # First, try to find existing account list by name
+            found = False
+            for account_list in account_lists:
+                if account_list.name == requested_name:
+                    filtered_lists.append(account_list)
+                    found = True
+                    break
 
-        if not_found:
-            logger.warning(f"Account lists not found: {', '.join(not_found)}")
+            # If not found in existing lists, treat as adhoc account handle
+            if not found:
+                adhoc_accounts.append(requested_name)
+
+        # Create adhoc account lists for handles not found in config
+        for account_handle in adhoc_accounts:
+            logger.info(f"Creating adhoc account list for @{account_handle}")
+            adhoc_list = AccountList(
+                name=account_handle,
+                accounts=[account_handle]
+            )
+            filtered_lists.append(adhoc_list)
+
+        # Log results
+        found_names = [al.name for al in filtered_lists if al.name in [existing.name for existing in account_lists]]
+        adhoc_names = [al.name for al in filtered_lists if al.name in adhoc_accounts]
+
+        if found_names:
+            logger.info(f"Found existing account lists: {', '.join(found_names)}")
+        if adhoc_names:
+            logger.info(f"Created adhoc account lists: {', '.join(adhoc_names)}")
+
         if not filtered_lists:
-            logger.error(f"No matching account lists found for: {', '.join(account_lists_filter)}")
+            logger.error(f"No accounts found or created for: {', '.join(account_lists_filter)}")
             return
 
         account_lists = filtered_lists
-        logger.info(f"Filtered to {len(account_lists)} account list(s): {', '.join(found_names)}")
+        logger.info(f"Processing {len(account_lists)} account list(s) total")
     window_hours = window_hours or full_config.get('newsletter', {}).get('window_hours', 24)
     max_per_account = full_config.get('newsletter', {}).get('max_per_account', 10)
     
