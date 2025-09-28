@@ -19,6 +19,10 @@ account_lists:
     accounts: ["howlingmutant0"]
   - name: "zeta_globin"
     accounts: ["zeta_globin", "snuppydogg"]
+  - name: "ML Boys"
+    accounts: ["kalomaze", "wordgrammer", "_xjdr"]
+  - name: "Lukas"
+    accounts: ["schizo_freq"]
 
 # Global configuration
 window_hours: 72       # lookback window for new tweets (24 * 3 days = 72 hours)

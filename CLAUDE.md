@@ -229,10 +229,13 @@ def download_images(tweet_id, handle, image_urls):
 kestral/
 ├── .env                    # SMTP + Nitter config
 ├── accounts.yaml           # Account list + settings
-├── main.py                 # Complete MVP implementation (573 lines)
+├── main.py                 # Entry point + platform dispatch
+├── common_utils.py         # Shared utilities (database, email, logging)
+├── twitter.py              # Twitter/Nitter logic with nested quote support
 ├── newsletter.db           # SQLite database (functional)
 ├── images/                 # Downloaded images
 │   └── 2025-09-03/        # Daily organization
+├── test_suite.py           # Automated test suite
 ├── .venv/                  # Python virtual environment
 └── CLAUDE.md              # This file
 ```
@@ -244,7 +247,40 @@ kestral/
 - Phase 3: Email template improvements
 - Phase 4: Scheduling and operational tools
 
-**Testing Status:** Ready for production use in MVP mode
+## Testing
+
+### Test Suite
+
+The project includes an automated test suite in `test_suite.py` with clear pass/fail results:
+
+**Current Test Coverage:**
+- URL extraction from plain text
+- Post class quote data handling
+- Nested quote processing logic
+- HTML rendering for multi-level quotes
+- JSON serialization/deserialization
+
+**Running Tests:**
+```bash
+# Activate virtual environment
+source .venv/bin/activate
+
+# Run test suite
+python test_suite.py
+```
+
+**Test Output Format:**
+- ✅ PASS/❌ FAIL for each test with clear error messages
+- Final summary with total passed/failed counts
+- Exit code 0 for success, 1 for failure (good for CI/CD)
+
+**Integration Testing:**
+```bash
+# Test with live Nitter feeds (dry run)
+python main.py --platform=twitter --to=test@example.com --dry-run
+```
+
+**Status:** Basic test coverage for nested quote functionality. Tests will expand as new features are added.
 
 ## Discord Integration Plan
 

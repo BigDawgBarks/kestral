@@ -16,7 +16,7 @@ import feedparser
 import httpx
 import os
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from common_utils import send_email, upload_to_image_server, get_image_extension, log_or_print
 
@@ -67,6 +67,9 @@ class Post:
         self.quote_author = None
         self.quote_text = None
         self.quote_image_urls = []
+
+        # New nested quote structure
+        self.quote_data = None  # Will store nested dict or be None
     
     def set_x_url(self, config: Dict):
         """Set the x.com URL by replacing the Nitter base URL"""
@@ -101,6 +104,75 @@ class Post:
             pass
         return None
 
+    def set_quote_data(self, quote_data_dict):
+        """Set nested quote data and populate legacy fields for compatibility"""
+        self.quote_data = quote_data_dict
+        if quote_data_dict:
+            self.quote_tweet_url = quote_data_dict.get("url")
+            self.quote_author = quote_data_dict.get("author")
+            self.quote_text = quote_data_dict.get("text")
+            self.quote_image_urls = quote_data_dict.get("image_urls", [])
+
+    def serialize_quote_data_for_db(self):
+        """Serialize quote data for database storage"""
+        if self.quote_data:
+            return json.dumps(self.quote_data)
+        return self.quote_text  # Fallback to legacy text
+
+    @staticmethod
+    def deserialize_quote_data_from_db(quote_text_field):
+        """Deserialize quote data from database field"""
+        if not quote_text_field:
+            return None
+        if quote_text_field.startswith('{'):
+            try:
+                return json.loads(quote_text_field)
+            except json.JSONDecodeError:
+                return None
+        return None  # Legacy text format, handled by legacy fields
+
+
+def format_tweet_body_html(raw_html: Optional[str]) -> str:
+    """Return sanitized HTML for tweet body, preserving full hyperlink targets."""
+    if not raw_html:
+        return ''
+
+    soup = BeautifulSoup(raw_html, 'html.parser')
+
+    for tag in soup.find_all(True):
+        if tag.name == 'a':
+            href = tag.get('href')
+            if not href:
+                tag.unwrap()
+                continue
+
+            display_text = tag.get_text(separator='', strip=True)
+            truncated_display = False
+            if display_text:
+                truncated_display = '...' in display_text or '\u2026' in display_text
+
+            should_replace_with_href = truncated_display or not display_text
+            if display_text and display_text.startswith('https://t.co/'):
+                should_replace_with_href = True
+
+            if should_replace_with_href:
+                tag.clear()
+                tag.append(NavigableString(href))
+
+            tag.attrs = {
+                'href': href,
+                'style': 'color: #1da1f2; text-decoration: none;'
+            }
+        elif tag.name == 'br':
+            continue
+        else:
+            tag.unwrap()
+
+    sanitized_html = str(soup)
+    sanitized_html = sanitized_html.replace('<br/>', '\n').replace('<br />', '\n').replace('<br>', '\n')
+
+    return sanitized_html.strip()
+
 
 def parse_account_lists(config: Dict) -> List[AccountList]:
     """Parse account lists from configuration"""
@@ -127,7 +199,16 @@ def parse_account_lists(config: Dict) -> List[AccountList]:
     return account_lists
 
 
-def fetch_quoted_tweet_content(quote_url: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str], List[str]]:
+def extract_quote_tweet_url_from_text(text: str) -> Optional[str]:
+    """Extract quote tweet URL from plain text content"""
+    if not text:
+        return None
+    # Look for status URLs in text (Nitter or X.com format)
+    match = re.search(r'(https?://[^\s]*status/\d+)', text)
+    return match.group(1) if match else None
+
+
+def fetch_basic_quote_content(quote_url: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str], List[str]]:
     """Fetch quoted tweet content from Nitter page and return (author, text, image_urls)"""
     if not quote_url:
         return None, None, []
@@ -182,6 +263,37 @@ def fetch_quoted_tweet_content(quote_url: str, config: Dict, logger=None) -> tup
     except Exception as e:
         log_or_print(f"Failed to fetch quoted tweet content from {quote_url}: {e}", 'warning', logger)
         return None, None, []
+
+
+def fetch_quoted_tweet_content_recursive(quote_url: str, config: Dict, max_depth=1, current_depth=0, logger=None) -> Optional[Dict]:
+    """Recursively fetch nested quote content with depth limit"""
+    if current_depth >= max_depth or not quote_url:
+        return None
+
+    # Fetch basic quote content
+    author, text, image_urls = fetch_basic_quote_content(quote_url, config, logger)
+
+    if not author and not text:
+        return None
+
+    quote_data = {
+        "url": quote_url,
+        "author": author,
+        "text": text,
+        "image_urls": image_urls
+    }
+
+    # Recursively check for nested quotes
+    if text:
+        nested_url = extract_quote_tweet_url_from_text(text)
+        if nested_url:
+            nested_data = fetch_quoted_tweet_content_recursive(
+                nested_url, config, max_depth, current_depth + 1, logger
+            )
+            if nested_data:
+                quote_data["nested_quote"] = nested_data
+
+    return quote_data
 
 
 def get_profile_pic_url_from_nitter(handle: str, config: Dict, logger=None) -> Optional[str]:
@@ -283,6 +395,51 @@ def download_profile_pic(handle: str, profile_pic_url: str, run_timestamp: str, 
     except Exception as e:
         log_or_print(f"Failed to download profile pic for @{handle}: {e}", 'warning', logger)
         return None, None
+
+
+def extract_all_quote_authors(quote_data: Dict) -> set:
+    """Recursively extract all authors from nested quote structure"""
+    authors = set()
+    if not quote_data:
+        return authors
+
+    # Add author from current level
+    if quote_data.get("author"):
+        authors.add(quote_data["author"])
+
+    # Recursively extract from nested quotes
+    if quote_data.get("nested_quote"):
+        authors.update(extract_all_quote_authors(quote_data["nested_quote"]))
+
+    return authors
+
+
+def download_quote_images_recursive(post: Post, quote_data: Dict, handle: str, config: Dict, logger=None):
+    """Recursively download images for nested quote structure"""
+    def download_images_for_quote(quote_data_level: Dict, suffix: str):
+        """Download images for a specific quote level"""
+        if quote_data_level.get("image_urls"):
+            tweet_id = post.id.split('/')[-1]
+            paths, server_urls = download_images(
+                tweet_id + suffix,
+                handle,
+                quote_data_level["image_urls"],
+                config,
+                logger
+            )
+            # Replace Nitter URLs with server URLs in the quote data
+            quote_data_level["image_urls"] = server_urls
+
+    # Download images for main quote
+    download_images_for_quote(quote_data, "_quote")
+
+    # Recursively download images for nested quotes
+    current_quote = quote_data
+    depth = 1
+    while current_quote.get("nested_quote"):
+        current_quote = current_quote["nested_quote"]
+        download_images_for_quote(current_quote, f"_nested{depth}")
+        depth += 1
 
 
 def download_images(tweet_id: str, handle: str, image_urls: List[str], config: Dict, logger=None) -> tuple[List[str], List[str]]:
@@ -509,7 +666,7 @@ def save_posts(posts: List[Post]):
                 post.is_reply, 
                 post.quote_tweet_url,
                 post.quote_author,
-                post.quote_text,
+                post.serialize_quote_data_for_db(),
                 json.dumps(post.quote_image_urls),
                 post.retweet_author,
                 True  # MVP includes all posts
@@ -526,6 +683,50 @@ def save_posts(posts: List[Post]):
         conn.commit()
 
 
+def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None) -> str:
+    """Recursively render nested quote structure"""
+    if not quote_data:
+        return ""
+
+    # Adjust styling based on nesting depth
+    indent = depth * 16  # Increase indentation per level
+    font_size = max(12, 14 - depth)  # Smaller font for deeper nesting
+
+    # Get profile picture for quote author
+    quote_author = quote_data.get("author", "unknown")
+    profile_pic_html = ''
+    if author_pfps and quote_author in author_pfps:
+        author_pfp_info = author_pfps[quote_author]
+        author_pfp_server_url = author_pfp_info[1] if author_pfp_info else None
+        if author_pfp_server_url:
+            pic_size = max(20, 24 - depth * 2)  # Smaller profile pics for deeper nesting
+            profile_pic_html = f'<img src="{author_pfp_server_url}" style="width: {pic_size}px; height: {pic_size}px; border-radius: 50%; margin-right: 8px; vertical-align: middle;">'
+
+    quote_html = f'''
+    <div style="border: 1px solid #e1e8ed; border-radius: 8px; padding: 8px;
+                margin: 8px 0 8px {indent}px; background: #f7f9fa; font-size: {font_size}px;">
+        <div style="font-weight: bold; margin-bottom: 4px; display: flex; align-items: center;">
+            {profile_pic_html}💬 @{quote_author}
+        </div>
+        <div style="margin-bottom: 6px;">{quote_data.get("text", "")}</div>'''
+
+    # Add images if present
+    if quote_data.get("image_urls"):
+        quote_html += '<div style="margin: 4px 0;">'
+        for img_url in quote_data["image_urls"]:
+            quote_html += f'<img src="{img_url}" style="max-width: 100%; height: auto; border-radius: 4px; margin: 2px 0; display: block;">'
+        quote_html += '</div>'
+
+    # Recursively render nested quote
+    if quote_data.get("nested_quote"):
+        quote_html += render_quote_html_recursive(quote_data["nested_quote"], depth + 1, author_pfps)
+
+    quote_html += f'<div style="margin-top: 4px;"><a href="{quote_data.get("url", "")}" style="color: #1da1f2; font-size: 11px;">View original →</a></div>'
+    quote_html += '</div>'
+
+    return quote_html
+
+
 def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Optional[str]]]) -> str:
     """Render a single tweet in Twitter-like HTML format"""
     
@@ -535,16 +736,16 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
         display_author = post.retweet_author or 'unknown'
         retweet_header = f'<div style="color: #657786; font-size: 13px; margin-bottom: 8px;">🔁 Retweeted by @{post.handle}</div>'
         display_handle = display_author
-        # For retweets, use the original tweet content from description
-        tweet_text = re.sub(r'<[^>]+>', '', post.raw_description) if post.raw_description else ''
-        tweet_text = re.sub(r'\s+', ' ', tweet_text).strip()  # Clean up whitespace
+        tweet_body_html = format_tweet_body_html(post.raw_description or post.summary)
     else:
         # For regular tweets and quote tweets, show the main account's profile picture
         display_author = post.handle
         retweet_header = ''
         display_handle = post.handle
-        # Clean up tweet text (remove HTML tags from summary for display)
-        tweet_text = re.sub(r'<[^>]+>', '', post.summary) if post.summary else ''
+        tweet_body_html = format_tweet_body_html(post.summary or post.raw_description)
+
+    if not tweet_body_html:
+        tweet_body_html = ''
     
     # Get profile picture from author_pfps dictionary
     profile_pic_html = ''
@@ -558,48 +759,12 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
         profile_pic_html = '<div style="width: 48px; height: 48px; border-radius: 50%; background: #1da1f2; margin-right: 12px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 18px;">{}</div>'.format(display_author[0].upper())
     
     
-    # Handle quote tweet with actual content
+    # Handle quote tweet with recursive rendering
     quote_tweet_html = ''
-    if post.quote_tweet_url and (post.quote_author or post.quote_text):
-        # Render quote tweet with actual content
-        author_display = f"@{post.quote_author}" if post.quote_author else "Unknown"
-        text_display = post.quote_text if post.quote_text else "[No text content]"
-        
-        # Get quote author's profile picture
-        quote_author_pfp_html = ''
-        if post.quote_author:
-            quote_author_pfp_info = author_pfps.get(post.quote_author, (None, None))
-            quote_author_pfp_server_url = quote_author_pfp_info[1] if quote_author_pfp_info else None
-            
-            if quote_author_pfp_server_url:
-                quote_author_pfp_html = f'<img src="{quote_author_pfp_server_url}" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 8px;">'
-            else:
-                # Fallback placeholder for quote author
-                quote_author_pfp_html = f'<div style="width: 32px; height: 32px; border-radius: 50%; background: #1da1f2; margin-right: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 12px;">{post.quote_author[0].upper()}</div>'
-        
-        # Handle quote tweet images
-        quote_images_html = ''
-        if post.quote_image_urls:
-            quote_images_html = '<div style="margin-top: 8px;">'
-            for quote_img_url in post.quote_image_urls:
-                quote_images_html += f'<img src="{quote_img_url}" style="max-width: 100%; height: auto; border-radius: 8px; margin: 2px 0; display: block;">'
-            quote_images_html += '</div>'
-        
-        quote_tweet_html = f'''
-        <div style="border: 1px solid #e1e8ed; border-radius: 12px; padding: 12px; margin-top: 12px; background: #f7f9fa;">
-            <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                {quote_author_pfp_html}
-                <div style="color: #657786; font-size: 13px; font-weight: bold;">💬 Quoting {author_display}</div>
-            </div>
-            <div style="color: #14171a; font-size: 14px; line-height: 1.3; margin-bottom: 8px;">{text_display}</div>
-            {quote_images_html}
-            <div style="color: #1da1f2; font-size: 12px; margin-top: 8px;">
-                <a href="{post.quote_tweet_url}" style="color: #1da1f2; text-decoration: none;">View original →</a>
-            </div>
-        </div>
-        '''
+    if post.quote_data:
+        quote_tweet_html = render_quote_html_recursive(post.quote_data, 0, author_pfps)
     elif post.quote_tweet_url:
-        # Fallback for quotes where we couldn't fetch content
+        # Fallback for legacy data or failed quote fetching
         quote_author = 'unknown'
         if '/status/' in post.quote_tweet_url:
             url_parts = post.quote_tweet_url.split('/')
@@ -607,7 +772,7 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
                 if part == 'status' and i > 0:
                     quote_author = url_parts[i-1].split('.')[-1]
                     break
-        
+
         quote_tweet_html = f'''
         <div style="border: 1px solid #e1e8ed; border-radius: 12px; padding: 12px; margin-top: 12px; background: #f7f9fa;">
             <div style="color: #657786; font-size: 13px; margin-bottom: 6px;">💬 Quoting @{quote_author}</div>
@@ -636,7 +801,7 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
             <div style="flex: 1;">
                 <div style="font-weight: bold; color: #14171a;">@{display_handle}</div>
                 <div style="color: #657786; font-size: 13px; margin-bottom: 8px;">{time_str}</div>
-                <div style="color: #14171a; font-size: 15px; line-height: 1.4; white-space: pre-wrap;">{tweet_text}</div>
+                <div style="color: #14171a; font-size: 15px; line-height: 1.4; white-space: pre-wrap;">{tweet_body_html}</div>
                 {quote_tweet_html}
                 {images_html}
                 <div style="margin-top: 12px; padding-top: 8px; border-top: 1px solid #e1e8ed;">
@@ -835,21 +1000,15 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
                         full_config
                     )
                 
-                # Fetch quoted tweet content if quote tweet exists
+                # Fetch quoted tweet content with nested quotes support
                 if post.quote_tweet_url:
                     logger.info(f"Fetching quoted tweet content from {post.quote_tweet_url}")
-                    post.quote_author, post.quote_text, post.quote_image_urls = fetch_quoted_tweet_content(post.quote_tweet_url, full_config, logger)
-                    
-                    # Download quoted tweet images and upload to image server
-                    if post.quote_image_urls:
-                        quote_paths, quote_server_urls = download_images(
-                            post.id.split('/')[-1] + "_quote",  # Add _quote suffix to distinguish from regular images
-                            handle, 
-                            post.quote_image_urls,
-                            full_config
-                        )
-                        # Replace the Nitter URLs with server URLs for email display
-                        post.quote_image_urls = quote_server_urls
+                    quote_data = fetch_quoted_tweet_content_recursive(post.quote_tweet_url, full_config, max_depth=1, logger=logger)
+                    post.set_quote_data(quote_data)
+
+                    # Download images for all quotes in the nested structure
+                    if quote_data:
+                        download_quote_images_recursive(post, quote_data, handle, full_config, logger)
                     
                     # Small delay to be polite to Nitter instance
                     time.sleep(uniform(0.5, 1.0))
@@ -876,8 +1035,11 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
             if post.is_retweet and post.retweet_author:
                 unique_authors.add(post.retweet_author)
             
-            # Add quote author if it's a quote tweet
-            if post.quote_author:
+            # Add all quote authors from nested structure
+            if post.quote_data:
+                quote_authors = extract_all_quote_authors(post.quote_data)
+                unique_authors.update(quote_authors)
+            elif post.quote_author:  # Fallback for legacy data
                 unique_authors.add(post.quote_author)
         
         logger.info(f"Downloading profile pictures for {len(unique_authors)} unique authors...")
