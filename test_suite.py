@@ -9,9 +9,18 @@ import json
 import traceback
 from datetime import datetime, timezone
 
+from bs4 import BeautifulSoup
+
 sys.path.append('.')
 
-from twitter import Post, extract_quote_tweet_url_from_text, render_quote_html_recursive, format_tweet_body_html
+from twitter import (
+    Post,
+    extract_quote_tweet_url_from_text,
+    render_quote_html_recursive,
+    format_tweet_body_html,
+    normalize_nitter_status_url,
+    find_nested_quote_url,
+)
 
 class TestResult:
     def __init__(self):
@@ -117,6 +126,59 @@ def test_nested_quote_functionality():
     print("="*50)
 
     result = TestResult()
+
+    base_url = "https://nitter.example.com"
+
+    # URL normalization tests
+    result.assert_equal(
+        normalize_nitter_status_url("/user/status/123", base_url),
+        f"{base_url}/user/status/123",
+        "Normalize relative Nitter status URL",
+    )
+    result.assert_equal(
+        normalize_nitter_status_url("https://twitter.com/user/status/123", base_url),
+        f"{base_url}/user/status/123",
+        "Normalize twitter.com status URL",
+    )
+    result.assert_equal(
+        normalize_nitter_status_url(f"{base_url}/user/status/123", base_url),
+        f"{base_url}/user/status/123",
+        "Preserve absolute Nitter status URL",
+    )
+
+    # Nested quote discovery tests
+    soup_with_inline_quote = BeautifulSoup(
+        """
+        <div class="main-tweet">
+            <div class="tweet-content">
+                Inline content <a class="quote-link" href="/inline/status/456">quoted</a>
+            </div>
+        </div>
+        """,
+        "html.parser",
+    )
+    result.assert_equal(
+        find_nested_quote_url(soup_with_inline_quote, base_url),
+        f"{base_url}/inline/status/456",
+        "Extract nested quote URL from inline quote link",
+    )
+
+    soup_with_quote_block = BeautifulSoup(
+        """
+        <div class="main-tweet">
+            <div class="tweet-content">No inline links</div>
+            <div class="quote">
+                <a href="/block/status/789">block quote</a>
+            </div>
+        </div>
+        """,
+        "html.parser",
+    )
+    result.assert_equal(
+        find_nested_quote_url(soup_with_quote_block, base_url),
+        f"{base_url}/block/status/789",
+        "Extract nested quote URL from quote block",
+    )
 
     # Test 1: URL extraction from text
     print("\n--- URL Extraction Tests ---")

@@ -11,6 +11,7 @@ import html
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Optional
+from urllib.parse import urljoin, urlparse
 
 import feedparser
 import httpx
@@ -19,6 +20,9 @@ import os
 from bs4 import BeautifulSoup, NavigableString
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from common_utils import send_email, upload_to_image_server, get_image_extension, log_or_print
+
+
+MAX_QUOTE_DEPTH = 3
 
 
 
@@ -185,6 +189,53 @@ def format_tweet_body_html(raw_html: Optional[str]) -> str:
 
     return sanitized_html.strip()
 
+
+def normalize_nitter_status_url(href: Optional[str], base_url: str) -> Optional[str]:
+    """Return an absolute Nitter URL for a status link when possible."""
+    if not href:
+        return None
+
+    trimmed_href = href.strip()
+    if not trimmed_href:
+        return None
+
+    parsed = urlparse(trimmed_href)
+
+    if parsed.scheme and parsed.netloc:
+        normalized_netloc = parsed.netloc.lower()
+        if normalized_netloc.endswith('twitter.com') or normalized_netloc.endswith('x.com'):
+            if not base_url:
+                return trimmed_href
+            normalized_base = base_url if base_url.endswith('/') else f"{base_url}/"
+            return urljoin(normalized_base, parsed.path.lstrip('/'))
+        return trimmed_href
+
+    if base_url:
+        normalized_base = base_url if base_url.endswith('/') else f"{base_url}/"
+        return urljoin(normalized_base, trimmed_href.lstrip('/'))
+
+    return trimmed_href
+
+
+def find_nested_quote_url(soup: BeautifulSoup, base_url: str) -> Optional[str]:
+    """Locate the first nested quote URL within a tweet page."""
+    selectors = (
+        '.main-tweet .tweet-content a.quote-link',
+        '.main-tweet .quote a.quote-link',
+        '.main-tweet .quote a[href*="status/"]'
+    )
+
+    for selector in selectors:
+        link = soup.select_one(selector)
+        if not link:
+            continue
+        normalized = normalize_nitter_status_url(link.get('href'), base_url)
+        if normalized:
+            return normalized
+
+    return None
+
+
 def parse_account_lists(config: Dict) -> List[AccountList]:
     """Parse account lists from configuration"""
     account_lists = []
@@ -219,11 +270,12 @@ def extract_quote_tweet_url_from_text(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def fetch_basic_quote_content(quote_url: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str], List[str]]:
-    """Fetch quoted tweet content from Nitter page and return (author, text, image_urls)"""
+def fetch_basic_quote_content(
+        quote_url: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str], List[str], Optional[str]]:
+    """Fetch quoted tweet content from Nitter page and return (author, text, image_urls, nested_quote_url)"""
     if not quote_url:
-        return None, None, []
-    
+        return None, None, [], None
+
     try:
         # Use retry decorator for HTTP request with exponential backoff
         @retry(
@@ -238,6 +290,7 @@ def fetch_basic_quote_content(quote_url: str, config: Dict, logger=None) -> tupl
 
         response = fetch_quote_page()
         soup = BeautifulSoup(response.content, 'html.parser')
+        base_url = config.get('nitter', {}).get('base_url', '')
         
         # Extract quoted tweet author
         author = None
@@ -250,39 +303,50 @@ def fetch_basic_quote_content(quote_url: str, config: Dict, logger=None) -> tupl
 
         # Extract quoted tweet text
         text = None
+        nested_quote_url = None
         text_elem = soup.select_one('.main-tweet .tweet-content')
         if text_elem:
-            # Remove quote tweet links and clean up
-            for link in text_elem.select('a.quote-link'):
+            quote_links = text_elem.select('a.quote-link')
+            for link in quote_links:
+                if not nested_quote_url:
+                    nested_quote_url = normalize_nitter_status_url(link.get('href'), base_url)
                 link.decompose()
             text = text_elem.get_text().strip()
-        
+
+        if not nested_quote_url:
+            nested_quote_url = find_nested_quote_url(soup, base_url)
+
         # Extract images from quoted tweet
         image_urls = []
         # Look for images in the attachments section of the main tweet
         img_elems = soup.select('.main-tweet .attachments .still-image img')
         for img in img_elems:
             src = img.get('src')
-            if src and src.startswith('/pic/'):
-                # Convert relative URL to absolute
-                base_url = config.get('nitter', {}).get('base_url', '')
-                full_url = base_url + src
-                image_urls.append(full_url)
-        
-        return author, text, image_urls
-        
+            if src:
+                if src.startswith('/pic/') and base_url:
+                    image_urls.append(f"{base_url}{src}")
+                else:
+                    image_urls.append(src)
+
+        return author, text, image_urls, nested_quote_url
+
     except Exception as e:
         log_or_print(f"Failed to fetch quoted tweet content from {quote_url}: {e}", 'warning', logger)
-        return None, None, []
+        return None, None, [], None
 
 
-def fetch_quoted_tweet_content_recursive(quote_url: str, config: Dict, max_depth=1, current_depth=0, logger=None) -> Optional[Dict]:
+def fetch_quoted_tweet_content_recursive(
+        quote_url: str,
+        config: Dict,
+        max_depth: int = MAX_QUOTE_DEPTH,
+        current_depth: int = 0,
+        logger=None) -> Optional[Dict]:
     """Recursively fetch nested quote content with depth limit"""
     if current_depth >= max_depth or not quote_url:
         return None
 
     # Fetch basic quote content
-    author, text, image_urls = fetch_basic_quote_content(quote_url, config, logger)
+    author, text, image_urls, nested_quote_url = fetch_basic_quote_content(quote_url, config, logger)
 
     if not author and not text:
         return None
@@ -295,9 +359,12 @@ def fetch_quoted_tweet_content_recursive(quote_url: str, config: Dict, max_depth
     }
 
     # Recursively check for nested quotes
-    if text:
-        nested_url = extract_quote_tweet_url_from_text(text)
+    if text or nested_quote_url:
+        nested_url = nested_quote_url or extract_quote_tweet_url_from_text(text)
         if nested_url:
+            base_url = config.get('nitter', {}).get('base_url', '')
+            nested_url = normalize_nitter_status_url(nested_url, base_url)
+        if nested_url and nested_url != quote_url:
             nested_data = fetch_quoted_tweet_content_recursive(
                 nested_url, config, max_depth, current_depth + 1, logger
             )
@@ -1016,7 +1083,7 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
                 # Fetch quoted tweet content with nested quotes support
                 if post.quote_tweet_url:
                     logger.info(f"Fetching quoted tweet content from {post.quote_tweet_url}")
-                    quote_data = fetch_quoted_tweet_content_recursive(post.quote_tweet_url, full_config, max_depth=1, logger=logger)
+                    quote_data = fetch_quoted_tweet_content_recursive(post.quote_tweet_url, full_config, max_depth=MAX_QUOTE_DEPTH, logger=logger)
                     post.set_quote_data(quote_data)
 
                     # Download images for all quotes in the nested structure
