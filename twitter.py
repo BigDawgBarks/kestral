@@ -7,9 +7,9 @@ import json
 import sqlite3
 import time
 import re
+import html
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from random import uniform
 from typing import List, Dict, Optional
 
 import feedparser
@@ -139,6 +139,13 @@ def format_tweet_body_html(raw_html: Optional[str]) -> str:
 
     soup = BeautifulSoup(raw_html, 'html.parser')
 
+    for text_node in list(soup.find_all(string=True)):
+        if isinstance(text_node, NavigableString) and not text_node.strip():
+            text_node.extract()
+
+    block_level_tags = {'p', 'div', 'blockquote', 'li'}
+    container_tags = {'ul', 'ol'}
+
     for tag in soup.find_all(True):
         if tag.name == 'a':
             href = tag.get('href')
@@ -165,6 +172,11 @@ def format_tweet_body_html(raw_html: Optional[str]) -> str:
             }
         elif tag.name == 'br':
             continue
+        elif tag.name in block_level_tags:
+            tag.append(soup.new_tag('br'))
+            tag.unwrap()
+        elif tag.name in container_tags:
+            tag.unwrap()
         else:
             tag.unwrap()
 
@@ -172,7 +184,6 @@ def format_tweet_body_html(raw_html: Optional[str]) -> str:
     sanitized_html = sanitized_html.replace('<br/>', '\n').replace('<br />', '\n').replace('<br>', '\n')
 
     return sanitized_html.strip()
-
 
 def parse_account_lists(config: Dict) -> List[AccountList]:
     """Parse account lists from configuration"""
@@ -622,7 +633,7 @@ def fetch_feed(handle: str, window_hours: int, config: Dict, max_posts: int = No
             log_or_print(f"Page {page_count}: found {len([p for p in posts if p.handle == handle])} tweets within window, continuing...", 'info', logger)
             
             # Be polite - small delay between pages
-            time.sleep(uniform(0.25, 0.5))
+            time.sleep(0.1)
             
         except Exception as e:
             log_or_print(f"Error fetching page {page_count} for {handle}: {e}", 'error', logger)
@@ -702,13 +713,15 @@ def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None) -> 
             pic_size = max(20, 24 - depth * 2)  # Smaller profile pics for deeper nesting
             profile_pic_html = f'<img src="{author_pfp_server_url}" style="width: {pic_size}px; height: {pic_size}px; border-radius: 50%; margin-right: 8px; vertical-align: middle;">'
 
+    quote_text = quote_data.get("text") or ""
+
     quote_html = f'''
     <div style="border: 1px solid #e1e8ed; border-radius: 8px; padding: 8px;
                 margin: 8px 0 8px {indent}px; background: #f7f9fa; font-size: {font_size}px;">
         <div style="font-weight: bold; margin-bottom: 4px; display: flex; align-items: center;">
             {profile_pic_html}💬 @{quote_author}
         </div>
-        <div style="margin-bottom: 6px;">{quote_data.get("text", "")}</div>'''
+        <div style="margin-bottom: 6px; white-space: pre-wrap;">{html.escape(quote_text)}</div>'''
 
     # Add images if present
     if quote_data.get("image_urls"):
@@ -1011,13 +1024,13 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
                         download_quote_images_recursive(post, quote_data, handle, full_config, logger)
                     
                     # Small delay to be polite to Nitter instance
-                    time.sleep(uniform(0.25, 0.5))
+                    time.sleep(0.1)
             
             list_new_posts.extend(new_posts)
             logger.info(f"Found {len(new_posts)} new posts from @{handle}")
             
             # Be polite - sleep between feeds
-            time.sleep(uniform(0.15, 0.4))
+            time.sleep(0.1)
         
         if not list_new_posts:
             logger.info(f"No new posts found for {account_list.name}")
@@ -1067,7 +1080,7 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
                 logger.warning(f"Could not get profile picture URL for @{author}")
             
             # Small delay to be polite to Nitter
-            time.sleep(uniform(0.15, 0.35))
+            time.sleep(0.1)
         
         # Save posts to database (unless in no-db mode)
         if not no_db:
