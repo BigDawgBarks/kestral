@@ -622,7 +622,7 @@ def fetch_feed(handle: str, window_hours: int, config: Dict, max_posts: int = No
             log_or_print(f"Page {page_count}: found {len([p for p in posts if p.handle == handle])} tweets within window, continuing...", 'info', logger)
             
             # Be polite - small delay between pages
-            time.sleep(uniform(0.5, 1.0))
+            time.sleep(uniform(0.25, 0.5))
             
         except Exception as e:
             log_or_print(f"Error fetching page {page_count} for {handle}: {e}", 'error', logger)
@@ -1011,13 +1011,13 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
                         download_quote_images_recursive(post, quote_data, handle, full_config, logger)
                     
                     # Small delay to be polite to Nitter instance
-                    time.sleep(uniform(0.5, 1.0))
+                    time.sleep(uniform(0.25, 0.5))
             
             list_new_posts.extend(new_posts)
             logger.info(f"Found {len(new_posts)} new posts from @{handle}")
             
             # Be polite - sleep between feeds
-            time.sleep(uniform(0.3, 0.8))
+            time.sleep(uniform(0.15, 0.4))
         
         if not list_new_posts:
             logger.info(f"No new posts found for {account_list.name}")
@@ -1067,7 +1067,7 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
                 logger.warning(f"Could not get profile picture URL for @{author}")
             
             # Small delay to be polite to Nitter
-            time.sleep(uniform(0.3, 0.7))
+            time.sleep(uniform(0.15, 0.35))
         
         # Save posts to database (unless in no-db mode)
         if not no_db:
