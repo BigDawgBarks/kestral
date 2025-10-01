@@ -320,6 +320,96 @@ def test_tweet_link_rendering():
     return result
 
 
+def test_quote_timestamp_functionality():
+    """Test timestamp extraction and rendering for quoted tweets"""
+    print("="*50)
+    print("TESTING: Quote Tweet Timestamp Functionality")
+    print("="*50)
+
+    result = TestResult()
+
+    print("\n--- Timestamp Rendering Tests ---")
+
+    # Test 1: Single quote with timestamp
+    quote_data_with_timestamp = {
+        "url": "http://example.com/status/123",
+        "author": "testuser",
+        "text": "This is a test quote",
+        "image_urls": [],
+        "published": "2025-01-15T14:30:00+00:00"
+    }
+
+    html = render_quote_html_recursive(quote_data_with_timestamp, depth=0, author_pfps=None)
+    result.assert_contains(html, "02:30 PM · Jan 15, 2025", "Timestamp formatted and displayed")
+    result.assert_contains(html, "@testuser", "Author present with timestamp")
+    result.assert_contains(html, "This is a test quote", "Quote text present with timestamp")
+
+    # Test 2: Nested quotes with timestamps at both levels
+    nested_quote_with_timestamps = {
+        "url": "http://example.com/status/123",
+        "author": "user1",
+        "text": "Level 1 quote",
+        "image_urls": [],
+        "published": "2025-01-15T14:30:00+00:00",
+        "nested_quote": {
+            "url": "http://example.com/status/456",
+            "author": "user2",
+            "text": "Level 2 nested quote",
+            "image_urls": [],
+            "published": "2025-01-14T10:15:00+00:00"
+        }
+    }
+
+    nested_html = render_quote_html_recursive(nested_quote_with_timestamps, depth=0, author_pfps=None)
+    result.assert_contains(nested_html, "02:30 PM · Jan 15, 2025", "Level 1 timestamp present")
+    result.assert_contains(nested_html, "10:15 AM · Jan 14, 2025", "Level 2 timestamp present")
+    result.assert_contains(nested_html, "@user1", "Level 1 author present")
+    result.assert_contains(nested_html, "@user2", "Level 2 author present")
+
+    # Test 3: Quote without timestamp (backward compatibility)
+    quote_without_timestamp = {
+        "url": "http://example.com/status/123",
+        "author": "testuser",
+        "text": "Quote without timestamp",
+        "image_urls": []
+    }
+
+    no_ts_html = render_quote_html_recursive(quote_without_timestamp, depth=0, author_pfps=None)
+    result.assert_contains(no_ts_html, "@testuser", "Author present without timestamp")
+    result.assert_contains(no_ts_html, "Quote without timestamp", "Quote text present without timestamp")
+
+    # Test 4: Quote with invalid timestamp (should handle gracefully)
+    quote_invalid_timestamp = {
+        "url": "http://example.com/status/123",
+        "author": "testuser",
+        "text": "Quote with invalid timestamp",
+        "image_urls": [],
+        "published": "invalid-date-string"
+    }
+
+    invalid_html = render_quote_html_recursive(quote_invalid_timestamp, depth=0, author_pfps=None)
+    result.assert_contains(invalid_html, "@testuser", "Author present with invalid timestamp")
+    result.assert_contains(invalid_html, "Quote with invalid timestamp", "Quote text present with invalid timestamp")
+
+    # Test 5: Timezone conversion - UTC to Pacific
+    quote_utc = {
+        "url": "http://example.com/status/123",
+        "author": "testuser",
+        "text": "Testing timezone conversion",
+        "image_urls": [],
+        "published": "2025-01-15T22:30:00+00:00"  # 10:30 PM UTC = 2:30 PM Pacific
+    }
+
+    pacific_html = render_quote_html_recursive(quote_utc, depth=0, author_pfps=None, timezone_str="America/Los_Angeles")
+    result.assert_contains(pacific_html, "02:30 PM · Jan 15, 2025", "UTC timestamp converted to Pacific time")
+
+    # Test 6: Default timezone (UTC) when not specified
+    utc_html = render_quote_html_recursive(quote_utc, depth=0, author_pfps=None, timezone_str="UTC")
+    result.assert_contains(utc_html, "10:30 PM · Jan 15, 2025", "Timestamp displayed in UTC when specified")
+
+    return result
+
+
 def run_all_tests():
     """Run all test suites"""
     print("🧪 NEWSLETTER SYSTEM TEST SUITE")
@@ -334,6 +424,9 @@ def run_all_tests():
 
         link_result = test_tweet_link_rendering()
         all_results.append(link_result)
+
+        timestamp_result = test_quote_timestamp_functionality()
+        all_results.append(timestamp_result)
 
     except Exception as e:
         print(f"\n❌ CRITICAL ERROR: Test suite crashed")

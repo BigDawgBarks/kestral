@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Optional
 from urllib.parse import urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 import feedparser
 import httpx
@@ -23,6 +24,20 @@ from common_utils import send_email, upload_to_image_server, get_image_extension
 
 
 MAX_QUOTE_DEPTH = 3
+
+
+def convert_to_local_timezone(dt: datetime, timezone_str: str) -> datetime:
+    """Convert UTC datetime to local timezone"""
+    if dt.tzinfo is None:
+        # Assume UTC if no timezone info
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    try:
+        local_tz = ZoneInfo(timezone_str)
+        return dt.astimezone(local_tz)
+    except Exception:
+        # Fallback to UTC if timezone conversion fails
+        return dt
 
 
 
@@ -271,10 +286,10 @@ def extract_quote_tweet_url_from_text(text: str) -> Optional[str]:
 
 
 def fetch_basic_quote_content(
-        quote_url: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str], List[str], Optional[str]]:
-    """Fetch quoted tweet content from Nitter page and return (author, text, image_urls, nested_quote_url)"""
+        quote_url: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str], List[str], Optional[str], Optional[datetime]]:
+    """Fetch quoted tweet content from Nitter page and return (author, text, image_urls, nested_quote_url, published)"""
     if not quote_url:
-        return None, None, [], None
+        return None, None, [], None, None
 
     try:
         # Use retry decorator for HTTP request with exponential backoff
@@ -291,7 +306,7 @@ def fetch_basic_quote_content(
         response = fetch_quote_page()
         soup = BeautifulSoup(response.content, 'html.parser')
         base_url = config.get('nitter', {}).get('base_url', '')
-        
+
         # Extract quoted tweet author
         author = None
         author_elem = soup.select_one('.main-tweet .tweet-header .username')
@@ -316,6 +331,19 @@ def fetch_basic_quote_content(
         if not nested_quote_url:
             nested_quote_url = find_nested_quote_url(soup, base_url)
 
+        # Extract timestamp
+        published = None
+        timestamp_elem = soup.select_one('.main-tweet .tweet-header .tweet-date a')
+        if timestamp_elem:
+            timestamp_title = timestamp_elem.get('title')
+            if timestamp_title:
+                try:
+                    # Nitter format: "Feb 15, 2025 · 3:45 PM UTC"
+                    published = datetime.strptime(timestamp_title, '%b %d, %Y · %I:%M %p %Z')
+                    published = published.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    log_or_print(f"Failed to parse timestamp: {timestamp_title}", 'warning', logger)
+
         # Extract images from quoted tweet
         image_urls = []
         # Look for images in the attachments section of the main tweet
@@ -328,11 +356,11 @@ def fetch_basic_quote_content(
                 else:
                     image_urls.append(src)
 
-        return author, text, image_urls, nested_quote_url
+        return author, text, image_urls, nested_quote_url, published
 
     except Exception as e:
         log_or_print(f"Failed to fetch quoted tweet content from {quote_url}: {e}", 'warning', logger)
-        return None, None, [], None
+        return None, None, [], None, None
 
 
 def fetch_quoted_tweet_content_recursive(
@@ -346,7 +374,7 @@ def fetch_quoted_tweet_content_recursive(
         return None
 
     # Fetch basic quote content
-    author, text, image_urls, nested_quote_url = fetch_basic_quote_content(quote_url, config, logger)
+    author, text, image_urls, nested_quote_url, published = fetch_basic_quote_content(quote_url, config, logger)
 
     if not author and not text:
         return None
@@ -355,7 +383,8 @@ def fetch_quoted_tweet_content_recursive(
         "url": quote_url,
         "author": author,
         "text": text,
-        "image_urls": image_urls
+        "image_urls": image_urls,
+        "published": published.isoformat() if published else None
     }
 
     # Recursively check for nested quotes
@@ -761,7 +790,7 @@ def save_posts(posts: List[Post]):
         conn.commit()
 
 
-def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None) -> str:
+def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None, timezone_str: str = "UTC") -> str:
     """Recursively render nested quote structure"""
     if not quote_data:
         return ""
@@ -782,12 +811,25 @@ def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None) -> 
 
     quote_text = quote_data.get("text") or ""
 
+    # Format timestamp if present
+    timestamp_html = ''
+    published_iso = quote_data.get("published")
+    if published_iso:
+        try:
+            published_dt = datetime.fromisoformat(published_iso)
+            local_dt = convert_to_local_timezone(published_dt, timezone_str)
+            time_str = local_dt.strftime('%I:%M %p · %b %d, %Y')
+            timestamp_html = f'<div style="color: #657786; font-size: 11px; margin-bottom: 4px;">{time_str}</div>'
+        except (ValueError, TypeError):
+            pass
+
     quote_html = f'''
     <div style="border: 1px solid #e1e8ed; border-radius: 8px; padding: 8px;
                 margin: 8px 0 8px {indent}px; background: #f7f9fa; font-size: {font_size}px;">
         <div style="font-weight: bold; margin-bottom: 4px; display: flex; align-items: center;">
             {profile_pic_html}💬 @{quote_author}
         </div>
+        {timestamp_html}
         <div style="margin-bottom: 6px; white-space: pre-wrap;">{html.escape(quote_text)}</div>'''
 
     # Add images if present
@@ -799,7 +841,7 @@ def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None) -> 
 
     # Recursively render nested quote
     if quote_data.get("nested_quote"):
-        quote_html += render_quote_html_recursive(quote_data["nested_quote"], depth + 1, author_pfps)
+        quote_html += render_quote_html_recursive(quote_data["nested_quote"], depth + 1, author_pfps, timezone_str)
 
     quote_html += f'<div style="margin-top: 4px;"><a href="{quote_data.get("url", "")}" style="color: #1da1f2; font-size: 11px;">View original →</a></div>'
     quote_html += '</div>'
@@ -807,7 +849,7 @@ def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None) -> 
     return quote_html
 
 
-def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Optional[str]]]) -> str:
+def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Optional[str]]], timezone_str: str = "UTC") -> str:
     """Render a single tweet in Twitter-like HTML format"""
     
     # Determine which author's profile picture to show
@@ -842,7 +884,7 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
     # Handle quote tweet with recursive rendering
     quote_tweet_html = ''
     if post.quote_data:
-        quote_tweet_html = render_quote_html_recursive(post.quote_data, 0, author_pfps)
+        quote_tweet_html = render_quote_html_recursive(post.quote_data, 0, author_pfps, timezone_str)
     elif post.quote_tweet_url:
         # Fallback for legacy data or failed quote fetching
         quote_author = 'unknown'
@@ -870,8 +912,9 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
             images_html += f'<img src="{server_url}" style="max-width: 100%; height: auto; border-radius: 12px; margin: 4px 0; display: block;">'
         images_html += '</div>'
     
-    # Format timestamp
-    time_str = post.published.strftime('%I:%M %p · %b %d, %Y')
+    # Format timestamp with timezone conversion
+    local_published = convert_to_local_timezone(post.published, timezone_str)
+    time_str = local_published.strftime('%I:%M %p · %b %d, %Y')
     
     return f'''
     <div style="border: 1px solid #e1e8ed; border-radius: 12px; padding: 16px; margin: 12px 0; background: white;">
@@ -894,7 +937,7 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
     '''
 
 
-def render_email(posts: List[Post], account_list: AccountList, author_pfps: Dict[str, tuple[Optional[str], Optional[str]]]) -> tuple[str, str]:
+def render_email(posts: List[Post], account_list: AccountList, author_pfps: Dict[str, tuple[Optional[str], Optional[str]]], timezone_str: str = "UTC") -> tuple[str, str]:
     """Render email content as text and HTML for an account list"""
     if not posts:
         return f"No new posts found for {account_list.name}.", f"<p>No new posts found for {account_list.name}.</p>"
@@ -959,7 +1002,7 @@ def render_email(posts: List[Post], account_list: AccountList, author_pfps: Dict
     
     # Render all tweets chronologically (oldest first)
     for post in sorted(posts, key=lambda p: p.published, reverse=False):
-        html_parts.append(render_tweet_html(post, author_pfps))
+        html_parts.append(render_tweet_html(post, author_pfps, timezone_str))
     
     html_parts.append("""
     </div>
@@ -1154,7 +1197,8 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
             save_posts(list_new_posts)
         
         # Render email for this account list
-        text_content, html_content = render_email(list_new_posts, account_list, author_pfps)
+        timezone_str = full_config.get('newsletter', {}).get('timezone', 'UTC')
+        text_content, html_content = render_email(list_new_posts, account_list, author_pfps, timezone_str)
         subject = account_list.get_email_subject()
         
         if dry_run:
