@@ -43,12 +43,16 @@ def main():
     cmd_args = " ".join(sys.argv[1:])
     logger.info(f"Command: {cmd_args}")
 
+    # TEMPORARY: Make --account-lists a no-op (to reverse: uncomment line below and remove None)
+    # account_lists_filter = getattr(args, 'account_lists', None)
+    account_lists_filter = None
+
     # Route to platform-specific implementation
     if args.platform == 'twitter':
         import twitter
         twitter.main(dry_run=args.dry_run, window_hours=args.window, no_db=args.no_db,
                     recipient_email=args.to, config_path=args.config, secrets_path=args.secrets,
-                    account_lists_filter=getattr(args, 'account_lists', None), logger=logger)
+                    account_lists_filter=account_lists_filter, logger=logger)
     elif args.platform == 'discord':
         # Future implementation
         logger.info("Discord support coming soon! Use --platform=twitter for now.")

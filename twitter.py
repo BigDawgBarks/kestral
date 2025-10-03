@@ -172,6 +172,11 @@ def format_tweet_body_html(raw_html: Optional[str]) -> str:
                 tag.unwrap()
                 continue
 
+            # Remove quote tweet links (they're displayed as cards)
+            if '/status/' in href or 'quote-link' in tag.get('class', []):
+                tag.decompose()
+                continue
+
             display_text = tag.get_text(separator='', strip=True)
             truncated_display = False
             if display_text:
@@ -192,7 +197,6 @@ def format_tweet_body_html(raw_html: Optional[str]) -> str:
         elif tag.name == 'br':
             continue
         elif tag.name in block_level_tags:
-            tag.append(soup.new_tag('br'))
             tag.unwrap()
         elif tag.name in container_tags:
             tag.unwrap()
@@ -326,7 +330,8 @@ def fetch_basic_quote_content(
                 if not nested_quote_url:
                     nested_quote_url = normalize_nitter_status_url(link.get('href'), base_url)
                 link.decompose()
-            text = text_elem.get_text().strip()
+            # Use format_tweet_body_html to properly expand truncated links
+            text = format_tweet_body_html(str(text_elem))
 
         if not nested_quote_url:
             nested_quote_url = find_nested_quote_url(soup, base_url)
@@ -830,7 +835,7 @@ def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None, tim
             {profile_pic_html}💬 @{quote_author}
         </div>
         {timestamp_html}
-        <div style="margin-bottom: 6px; white-space: pre-wrap;">{html.escape(quote_text)}</div>'''
+        <div style="margin-bottom: 6px; white-space: pre-wrap;">{quote_text}</div>'''
 
     # Add images if present
     if quote_data.get("image_urls"):
