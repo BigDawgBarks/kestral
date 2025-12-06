@@ -17,9 +17,11 @@ from twitter import (
     Post,
     extract_quote_tweet_url_from_text,
     render_quote_html_recursive,
+    render_tweet_html,
     format_tweet_body_html,
     normalize_nitter_status_url,
     find_nested_quote_url,
+    parse_media_from_description,
 )
 
 class TestResult:
@@ -410,6 +412,94 @@ def test_quote_timestamp_functionality():
     return result
 
 
+def test_video_media_handling():
+    """Test parsing and rendering of video thumbnails."""
+    print("\n==================================================")
+    print("TESTING: Video Media Handling")
+    print("==================================================")
+
+    result = TestResult()
+
+    base_url = "http://10.8.0.1:8080"
+    description = f'''
+    <p>How do you train this?</p>
+    <a href="{base_url}/SomeUser/status/123#m">
+      <br>Video<br>
+      <img src="/pic/amplify_video_thumb%2F123%2Fimg%2Fthumb.jpg" style="max-width:250px;" />
+    </a>
+    <p>Regular image:</p>
+    <img src="{base_url}/pic/media%2Fimage.jpg" />
+    '''
+
+    images, videos = parse_media_from_description(description, base_url)
+    result.assert_equal(len(images), 1, "Parse image count")
+    result.assert_equal(len(videos), 1, "Parse video count")
+    result.assert_true(videos[0]["thumbnail_url"].endswith("thumb.jpg"), "Video thumbnail captured")
+    result.assert_equal(videos[0]["target_url"], f"{base_url}/SomeUser/status/123#m", "Video target captured")
+
+    # Render main tweet with video overlay
+    post = Post(
+        id="id1",
+        handle="tester",
+        title="Title",
+        summary="Summary",
+        published=datetime.now(timezone.utc),
+        nitter_url=f"{base_url}/tester/status/1",
+        image_urls=[],
+        video_attachments=[{
+            "thumbnail_server_url": "https://img.server/thumb.jpg",
+            "target_url": "https://x.com/tester/status/1"
+        }],
+        raw_description=""
+    )
+    post.set_x_url({"nitter": {"base_url": base_url}})
+    html = render_tweet_html(post, author_pfps={}, timezone_str="UTC")
+    result.assert_contains(html, "▶ Video", "Main tweet shows video overlay text")
+    result.assert_contains(html, "https://img.server/thumb.jpg", "Main tweet uses video thumbnail")
+
+    # Render quote with video overlay
+    quote_data = {
+        "url": f"{base_url}/quoted/status/2",
+        "author": "quoted",
+        "text": "Quoted text",
+        "image_urls": [],
+        "video_attachments": [{
+            "thumbnail_server_url": "https://img.server/quoted.jpg",
+            "target_url": "https://x.com/quoted/status/2"
+        }]
+    }
+    quote_html = render_quote_html_recursive(quote_data, depth=0, author_pfps=None, timezone_str="UTC")
+    result.assert_contains(quote_html, "▶ Video", "Quote shows video overlay text")
+    result.assert_contains(quote_html, "https://img.server/quoted.jpg", "Quote uses video thumbnail")
+
+    return result
+
+
+def test_blockquote_stripping():
+    """Ensure blockquoted quoted-tweet content is removed from main body."""
+    print("\n==================================================")
+    print("TESTING: Blockquote Stripping")
+    print("==================================================")
+
+    result = TestResult()
+
+    raw = """
+    <p>Outer text about a topic.</p>
+    <blockquote>
+      <b>Some User (@someone)</b>
+      <p>Quoted content that should not appear.</p>
+    </blockquote>
+    <p>Ending sentence.</p>
+    """
+    cleaned = format_tweet_body_html(raw)
+    result.assert_true("Quoted content" not in cleaned, "Blockquote content removed")
+    result.assert_true("(@someone)" not in cleaned, "Quoted author removed")
+    result.assert_contains(cleaned, "Outer text about a topic.", "Outer text preserved")
+    result.assert_contains(cleaned, "Ending sentence.", "Ending text preserved")
+
+    return result
+
+
 def run_all_tests():
     """Run all test suites"""
     print("🧪 NEWSLETTER SYSTEM TEST SUITE")
@@ -427,6 +517,12 @@ def run_all_tests():
 
         timestamp_result = test_quote_timestamp_functionality()
         all_results.append(timestamp_result)
+
+        video_result = test_video_media_handling()
+        all_results.append(video_result)
+
+        blockquote_result = test_blockquote_stripping()
+        all_results.append(blockquote_result)
 
     except Exception as e:
         print(f"\n❌ CRITICAL ERROR: Test suite crashed")

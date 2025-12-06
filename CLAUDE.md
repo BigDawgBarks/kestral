@@ -198,6 +198,13 @@ def download_images(tweet_id, handle, image_urls):
 - Cap daily total (10-20 items)
 - Add image understanding only if truly needed
 
+## Testing
+- Unit tests (offline, fast): `python test_suite.py`
+- End-to-end snapshot test (hits private Nitter, needs network): `python test_e2e.py`
+  - Uses `NITTER_BASE_URL` (default `http://10.8.0.1:8080`)
+  - Golden snapshot: `fixtures/e2e_email_snapshot.html`
+  - Regenerate after intentional email/Nitter layout changes: `REGENERATE_GOLDEN=1 python test_e2e.py`
+
 ## Current Progress (as of 2025-09-04)
 
 ### Phase 1 - MVP Implementation ✅ COMPLETED

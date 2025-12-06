@@ -26,6 +26,17 @@ from common_utils import send_email, upload_to_image_server, get_image_extension
 MAX_QUOTE_DEPTH = 3
 
 
+def rewrite_url_for_public(url: Optional[str], internal_base: Optional[str], public_base: Optional[str]) -> Optional[str]:
+    """Replace internal Nitter base with public base for email links."""
+    if not url or not internal_base or not public_base:
+        return url
+    internal = internal_base.rstrip('/')
+    public = public_base.rstrip('/')
+    if url.startswith(internal):
+        return url.replace(internal, public, 1)
+    return url
+
+
 def convert_to_local_timezone(dt: datetime, timezone_str: str) -> datetime:
     """Convert UTC datetime to local timezone"""
     if dt.tzinfo is None:
@@ -60,7 +71,8 @@ class AccountList:
 class Post:
     def __init__(self, id: str, handle: str, title: str, summary: str, 
                  published: datetime, nitter_url: str, image_urls: List[str] = None,
-                 profile_pic_url: str = None, raw_description: str = None):
+                 profile_pic_url: str = None, raw_description: str = None,
+                 video_attachments: Optional[List[Dict[str, Optional[str]]]] = None):
         self.id = id
         self.handle = handle
         self.title = title
@@ -71,6 +83,8 @@ class Post:
         self.image_urls = image_urls or []
         self.image_paths = []
         self.server_image_urls = []  # Image server URLs for embedded images
+        # Video attachments are dicts with keys: thumbnail_url, target_url, thumbnail_server_url (populated after download)
+        self.video_attachments = video_attachments or []
         self.profile_pic_url = profile_pic_url
         self.profile_pic_path = None
         self.profile_pic_server_url = None
@@ -200,6 +214,9 @@ def format_tweet_body_html(raw_html: Optional[str]) -> str:
             }
         elif tag.name == 'br':
             continue
+        elif tag.name == 'blockquote':
+            # For quoted tweets embedded in the description, drop the whole blockquote
+            tag.decompose()
         elif tag.name in block_level_tags:
             tag.unwrap()
         elif tag.name in container_tags:
@@ -238,6 +255,39 @@ def normalize_nitter_status_url(href: Optional[str], base_url: str) -> Optional[
         return urljoin(normalized_base, trimmed_href.lstrip('/'))
 
     return trimmed_href
+
+
+def parse_media_from_description(description: str, base_url: str) -> tuple[list[str], list[Dict[str, Optional[str]]]]:
+    """Extract inline images and video thumbnails (with targets) from an RSS description block."""
+    if not description:
+        return [], []
+
+    soup = BeautifulSoup(description, 'html.parser')
+    image_urls: list[str] = []
+    video_attachments: list[Dict[str, Optional[str]]] = []
+
+    for img_tag in soup.find_all('img'):
+        src = img_tag.get('src')
+        if not src:
+            continue
+
+        abs_src = urljoin(base_url, src) if base_url else src
+        parent_link = img_tag.find_parent('a')
+        target_url = urljoin(base_url, parent_link.get('href')) if parent_link and parent_link.get('href') else None
+
+        is_video_thumb = 'video_thumb' in src or 'amplify_video_thumb' in src
+        if not is_video_thumb and parent_link and parent_link.get_text(strip=True).lower() == 'video':
+            is_video_thumb = True
+
+        if is_video_thumb:
+            video_attachments.append({
+                'thumbnail_url': abs_src,
+                'target_url': target_url
+            })
+        else:
+            image_urls.append(abs_src)
+
+    return image_urls, video_attachments
 
 
 def find_nested_quote_url(soup: BeautifulSoup, base_url: str) -> Optional[str]:
@@ -294,10 +344,10 @@ def extract_quote_tweet_url_from_text(text: str) -> Optional[str]:
 
 
 def fetch_basic_quote_content(
-        quote_url: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str], List[str], Optional[str], Optional[datetime]]:
-    """Fetch quoted tweet content from Nitter page and return (author, text, image_urls, nested_quote_url, published)"""
+        quote_url: str, config: Dict, logger=None) -> tuple[Optional[str], Optional[str], List[str], List[Dict[str, Optional[str]]], Optional[str], Optional[datetime]]:
+    """Fetch quoted tweet content from Nitter page and return (author, text, image_urls, video_attachments, nested_quote_url, published)"""
     if not quote_url:
-        return None, None, [], None, None
+        return None, None, [], [], None, None
 
     try:
         # Use retry decorator for HTTP request with exponential backoff
@@ -353,23 +403,38 @@ def fetch_basic_quote_content(
                 except ValueError:
                     log_or_print(f"Failed to parse timestamp: {timestamp_title}", 'warning', logger)
 
-        # Extract images from quoted tweet
+        # Extract images and video thumbnails from quoted tweet
         image_urls = []
-        # Look for images in the attachments section of the main tweet
+        video_attachments: List[Dict[str, Optional[str]]] = []
+
+        # Images
         img_elems = soup.select('.main-tweet .attachments .still-image img')
         for img in img_elems:
             src = img.get('src')
-            if src:
-                if src.startswith('/pic/') and base_url:
-                    image_urls.append(f"{base_url}{src}")
-                else:
-                    image_urls.append(src)
+            if not src:
+                continue
+            if src.startswith('/pic/') and base_url:
+                image_urls.append(f"{base_url}{src}")
+            else:
+                image_urls.append(src)
 
-        return author, text, image_urls, nested_quote_url, published
+        # Video thumbnails
+        video_imgs = soup.select('.main-tweet .attachments .gallery-video img')
+        for img in video_imgs:
+            src = img.get('src')
+            if not src:
+                continue
+            thumb = f"{base_url}{src}" if src.startswith('/') else src
+            video_attachments.append({
+                "thumbnail_url": thumb,
+                "target_url": quote_url
+            })
+
+        return author, text, image_urls, video_attachments, nested_quote_url, published
 
     except Exception as e:
         log_or_print(f"Failed to fetch quoted tweet content from {quote_url}: {e}", 'warning', logger)
-        return None, None, [], None, None
+        return None, None, [], [], None, None
 
 
 def fetch_quoted_tweet_content_recursive(
@@ -383,7 +448,7 @@ def fetch_quoted_tweet_content_recursive(
         return None
 
     # Fetch basic quote content
-    author, text, image_urls, nested_quote_url, published = fetch_basic_quote_content(quote_url, config, logger)
+    author, text, image_urls, video_attachments, nested_quote_url, published = fetch_basic_quote_content(quote_url, config, logger)
 
     if not author and not text:
         return None
@@ -393,7 +458,8 @@ def fetch_quoted_tweet_content_recursive(
         "author": author,
         "text": text,
         "image_urls": image_urls,
-        "published": published.isoformat() if published else None
+        "published": published.isoformat() if published else None,
+        "video_attachments": video_attachments
     }
 
     # Recursively check for nested quotes
@@ -531,30 +597,39 @@ def extract_all_quote_authors(quote_data: Dict) -> set:
 
 
 def download_quote_images_recursive(post: Post, quote_data: Dict, handle: str, config: Dict, logger=None):
-    """Recursively download images for nested quote structure"""
-    def download_images_for_quote(quote_data_level: Dict, suffix: str):
-        """Download images for a specific quote level"""
+    """Recursively download images and video thumbnails for nested quote structure."""
+    def download_media_for_quote(quote_data_level: Dict, suffix: str):
+        """Download media for a specific quote level"""
+        tweet_id = post.id.split('/')[-1]
+
         if quote_data_level.get("image_urls"):
-            tweet_id = post.id.split('/')[-1]
-            paths, server_urls = download_images(
+            _, server_urls = download_images(
                 tweet_id + suffix,
                 handle,
                 quote_data_level["image_urls"],
                 config,
                 logger
             )
-            # Replace Nitter URLs with server URLs in the quote data
             quote_data_level["image_urls"] = server_urls
 
-    # Download images for main quote
-    download_images_for_quote(quote_data, "_quote")
+        if quote_data_level.get("video_attachments"):
+            quote_data_level["video_attachments"] = download_video_thumbnails(
+                tweet_id + suffix,
+                handle,
+                quote_data_level["video_attachments"],
+                config,
+                logger
+            )
 
-    # Recursively download images for nested quotes
+    # Download media for main quote
+    download_media_for_quote(quote_data, "_quote")
+
+    # Recursively download media for nested quotes
     current_quote = quote_data
     depth = 1
     while current_quote.get("nested_quote"):
         current_quote = current_quote["nested_quote"]
-        download_images_for_quote(current_quote, f"_nested{depth}")
+        download_media_for_quote(current_quote, f"_nested{depth}")
         depth += 1
 
 
@@ -600,6 +675,36 @@ def download_images(tweet_id: str, handle: str, image_urls: List[str], config: D
             log_or_print(f"Failed to download {url}: {e}", 'warning', logger)
     
     return local_paths, server_urls
+
+
+def download_video_thumbnails(
+        tweet_id: str,
+        handle: str,
+        video_attachments: List[Dict[str, Optional[str]]],
+        config: Dict,
+        logger=None) -> List[Dict[str, Optional[str]]]:
+    """Download video thumbnails and return attachments with populated server URLs."""
+    if not video_attachments:
+        return []
+
+    thumbnail_urls = [att.get("thumbnail_url") for att in video_attachments if att.get("thumbnail_url")]
+    if not thumbnail_urls:
+        return []
+
+    local_paths, server_urls = download_images(tweet_id, handle, thumbnail_urls, config, logger)
+
+    enriched: List[Dict[str, Optional[str]]] = []
+    server_iter = iter(server_urls)
+    for att in video_attachments:
+        thumb = att.get("thumbnail_url")
+        server_url = next(server_iter, None) if thumb else None
+        enriched.append({
+            "thumbnail_url": thumb,
+            "thumbnail_server_url": server_url,
+            "target_url": att.get("target_url")
+        })
+
+    return enriched
 
 
 def fetch_feed(handle: str, window_hours: int, config: Dict, max_posts: int = None, logger=None) -> List[Post]:
@@ -671,13 +776,12 @@ def fetch_feed(handle: str, window_hours: int, config: Dict, max_posts: int = No
                 if not published:
                     continue
                 
-                # Extract image URLs from description HTML
-                image_urls = []
+                # Extract media from description HTML
                 description = entry.get('description', '')
-                if description:
-                    # Find all img tags in the description
-                    img_matches = re.findall(r'<img src="([^"]+)"[^>]*>', description)
-                    image_urls.extend(img_matches)
+                image_urls, video_attachments = parse_media_from_description(
+                    description,
+                    config.get('nitter', {}).get('base_url', '')
+                )
                 
                 # Also check media_content for fallback
                 if hasattr(entry, 'media_content'):
@@ -700,6 +804,7 @@ def fetch_feed(handle: str, window_hours: int, config: Dict, max_posts: int = No
                     published=published,
                     nitter_url=entry.get('link', ''),
                     image_urls=image_urls,
+                    video_attachments=video_attachments,
                     profile_pic_url=profile_pic_url,
                     raw_description=description
                 )
@@ -777,6 +882,7 @@ def save_posts(posts: List[Post]):
                 post.profile_pic_path,
                 post.profile_pic_server_url, 
                 json.dumps(post.server_image_urls),
+                json.dumps(post.video_attachments),
                 post.raw_description, 
                 post.is_retweet, 
                 post.is_reply, 
@@ -792,14 +898,20 @@ def save_posts(posts: List[Post]):
                 INSERT OR REPLACE INTO tweets 
                 (id, handle, title, summary, published, nitter_url, x_url, 
                  image_urls, image_paths, profile_pic_url, profile_pic_path,
-                 profile_pic_server_url, server_image_urls, raw_description, is_retweet, is_reply, 
+                 profile_pic_server_url, server_image_urls, video_attachments, raw_description, is_retweet, is_reply, 
                  quote_tweet_url, quote_author, quote_text, quote_image_urls, retweet_author, included_in_newsletter)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', values)
         conn.commit()
 
 
-def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None, timezone_str: str = "UTC") -> str:
+def render_quote_html_recursive(
+        quote_data: Dict,
+        depth=0,
+        author_pfps=None,
+        timezone_str: str = "UTC",
+        nitter_internal_base: Optional[str] = None,
+        nitter_public_base: Optional[str] = None) -> str:
     """Recursively render nested quote structure"""
     if not quote_data:
         return ""
@@ -848,17 +960,48 @@ def render_quote_html_recursive(quote_data: Dict, depth=0, author_pfps=None, tim
             quote_html += f'<img src="{img_url}" style="max-width: 100%; height: auto; border-radius: 4px; margin: 2px 0; display: block;">'
         quote_html += '</div>'
 
+    # Add video thumbnails if present
+    video_attachments = quote_data.get("video_attachments") or []
+    if video_attachments:
+        quote_html += '<div style="margin: 6px 0;">'
+        for video_att in video_attachments:
+            thumb = video_att.get("thumbnail_server_url") or video_att.get("thumbnail_url")
+            target = video_att.get("target_url") or quote_data.get("url") or ""
+            if not thumb:
+                continue
+            quote_html += f'''
+            <a href="{target}" style="position: relative; display: inline-block; text-decoration: none;">
+                <img src="{thumb}" style="max-width: 100%; height: auto; border-radius: 6px; display: block; filter: brightness(0.92);">
+                <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.6); border-radius: 999px; padding: 8px 12px; color: white; font-weight: bold; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;">
+                    ▶ Video
+                </div>
+            </a>
+            '''
+        quote_html += '</div>'
+
     # Recursively render nested quote
     if quote_data.get("nested_quote"):
-        quote_html += render_quote_html_recursive(quote_data["nested_quote"], depth + 1, author_pfps, timezone_str)
+        quote_html += render_quote_html_recursive(
+            quote_data["nested_quote"],
+            depth + 1,
+            author_pfps,
+            timezone_str,
+            nitter_internal_base,
+            nitter_public_base
+        )
 
-    quote_html += f'<div style="margin-top: 4px;"><a href="{quote_data.get("url", "")}" style="color: #1da1f2; font-size: 11px;">View original →</a></div>'
+    quote_url = rewrite_url_for_public(quote_data.get("url", ""), nitter_internal_base, nitter_public_base)
+    quote_html += f'<div style="margin-top: 4px;"><a href="{quote_url}" style="color: #1da1f2; font-size: 11px;">View original →</a></div>'
     quote_html += '</div>'
 
     return quote_html
 
 
-def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Optional[str]]], timezone_str: str = "UTC") -> str:
+def render_tweet_html(post: Post,
+                      author_pfps: Dict[str, tuple[Optional[str], Optional[str]]],
+                      timezone_str: str = "UTC",
+                      nitter_internal_base: Optional[str] = None,
+                      nitter_public_base: Optional[str] = None) -> str:
     """Render a single tweet in Twitter-like HTML format"""
     
     # Determine which author's profile picture to show
@@ -893,7 +1036,8 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
     # Handle quote tweet with recursive rendering
     quote_tweet_html = ''
     if post.quote_data:
-        quote_tweet_html = render_quote_html_recursive(post.quote_data, 0, author_pfps, timezone_str)
+        quote_tweet_html = render_quote_html_recursive(
+            post.quote_data, 0, author_pfps, timezone_str, nitter_internal_base, nitter_public_base)
     elif post.quote_tweet_url:
         # Fallback for legacy data or failed quote fetching
         quote_author = 'unknown'
@@ -920,6 +1064,25 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
         for server_url in post.server_image_urls:
             images_html += f'<img src="{server_url}" style="max-width: 100%; height: auto; border-radius: 12px; margin: 4px 0; display: block;">'
         images_html += '</div>'
+
+    # Embed video thumbnails with play overlay
+    videos_html = ''
+    if post.video_attachments:
+        videos_html = '<div style="margin-top: 12px;">'
+        for video_att in post.video_attachments:
+            thumb = video_att.get("thumbnail_server_url") or video_att.get("thumbnail_url")
+            target = video_att.get("target_url") or post.x_url or post.nitter_url
+            if not thumb:
+                continue
+            videos_html += f'''
+            <a href="{target}" style="position: relative; display: inline-block; text-decoration: none;">
+                <img src="{thumb}" style="max-width: 100%; height: auto; border-radius: 12px; display: block; filter: brightness(0.92);">
+                <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.6); border-radius: 999px; padding: 10px 14px; color: white; font-weight: bold; font-size: 14px; display: inline-flex; align-items: center; gap: 6px;">
+                    ▶ Video
+                </div>
+            </a>
+            '''
+        videos_html += '</div>'
     
     # Format timestamp with timezone conversion
     local_published = convert_to_local_timezone(post.published, timezone_str)
@@ -935,9 +1098,10 @@ def render_tweet_html(post: Post, author_pfps: Dict[str, tuple[Optional[str], Op
                 <div style="color: #657786; font-size: 13px; margin-bottom: 8px;">{time_str}</div>
                 <div style="color: #14171a; font-size: 15px; line-height: 1.4; white-space: pre-wrap;">{tweet_body_html}</div>
                 {quote_tweet_html}
+                {videos_html}
                 {images_html}
                 <div style="margin-top: 12px; padding-top: 8px; border-top: 1px solid #e1e8ed;">
-                    <a href="{post.nitter_url}" style="color: #1da1f2; text-decoration: none; font-size: 13px; margin-right: 16px;">View on Nitter</a>
+                    <a href="{rewrite_url_for_public(post.nitter_url, nitter_internal_base, nitter_public_base)}" style="color: #1da1f2; text-decoration: none; font-size: 13px; margin-right: 16px;">View on Nitter</a>
                     <a href="{post.x_url}" style="color: #1da1f2; text-decoration: none; font-size: 13px;">View on X</a>
                 </div>
             </div>
@@ -971,7 +1135,7 @@ def render_email(posts: List[Post], account_list: AccountList, author_pfps: Dict
                 text_parts.append(f"🔁 Retweeted: {post.title}")
             else:
                 text_parts.append(f"• {post.title}")
-            text_parts.append(f"  {post.nitter_url}")
+            text_parts.append(f"  {rewrite_url_for_public(post.nitter_url, nitter_internal_base, nitter_public_base)}")
             text_parts.append("")
     else:
         # Multiple accounts - group by handle
@@ -989,7 +1153,7 @@ def render_email(posts: List[Post], account_list: AccountList, author_pfps: Dict
                     text_parts.append(f"🔁 Retweeted: {post.title}")
                 else:
                     text_parts.append(f"• {post.title}")
-                text_parts.append(f"  {post.nitter_url}")
+                text_parts.append(f"  {rewrite_url_for_public(post.nitter_url, nitter_internal_base, nitter_public_base)}")
                 text_parts.append("")
     
     text_content = "\n".join(text_parts)
@@ -1011,7 +1175,7 @@ def render_email(posts: List[Post], account_list: AccountList, author_pfps: Dict
     
     # Render all tweets chronologically (oldest first)
     for post in sorted(posts, key=lambda p: p.published, reverse=False):
-        html_parts.append(render_tweet_html(post, author_pfps, timezone_str))
+                html_parts.append(render_tweet_html(post, author_pfps, timezone_str, nitter_internal_base, nitter_public_base))
     
     html_parts.append("""
     </div>
@@ -1130,6 +1294,16 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
                         handle, 
                         post.image_urls,
                         full_config
+                    )
+
+                # Download video thumbnails and attach server URLs
+                if post.video_attachments:
+                    post.video_attachments = download_video_thumbnails(
+                        post.id.split('/')[-1],
+                        handle,
+                        post.video_attachments,
+                        full_config,
+                        logger
                     )
                 
                 # Fetch quoted tweet content with nested quotes support

@@ -109,6 +109,7 @@ def init_database():
                 profile_pic_path TEXT,
                 profile_pic_server_url TEXT,
                 server_image_urls TEXT,
+                video_attachments TEXT,
                 raw_description TEXT,
                 is_retweet BOOLEAN,
                 is_reply BOOLEAN,
@@ -122,6 +123,17 @@ def init_database():
                 llm_reason TEXT
             )
         ''')
+
+        # Backfill new columns for existing databases
+        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(tweets);").fetchall()}
+        if 'video_attachments' not in existing_columns:
+            conn.execute('ALTER TABLE tweets ADD COLUMN video_attachments TEXT')
+        if 'first_seen' not in existing_columns:
+            conn.execute('ALTER TABLE tweets ADD COLUMN first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+        if 'included_in_newsletter' not in existing_columns:
+            conn.execute('ALTER TABLE tweets ADD COLUMN included_in_newsletter BOOLEAN DEFAULT FALSE')
+        if 'llm_reason' not in existing_columns:
+            conn.execute('ALTER TABLE tweets ADD COLUMN llm_reason TEXT')
         
         # Discord tables (for future use)
         conn.execute('''

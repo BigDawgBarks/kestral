@@ -1,0 +1,33 @@
+account_lists:
+  - name: "teortaxestex"
+    accounts: ["teortaxestex"]
+  - name: "China Groypers"
+    accounts: ["zephyr_z9", "hsu_steve"]
+  - name: "spandrell4"
+    accounts: ["spandrell4"]
+  - name: "LindyMan"
+    accounts: ["paulskallas"]
+  - name: "nearcyan"
+    accounts: ["nearcyan"]
+  - name: "kitten_beloved"
+    accounts: ["kitten_beloved"]
+  - name: "roon"
+    accounts: ["tszzl"]
+  - name: "patio11"
+    accounts: ["patio11"]
+  - name: "howlingmutant0"
+    accounts: ["howlingmutant0"]
+  - name: "zeta_globin"
+    accounts: ["zeta_globin", "snuppydogg"]
+  - name: "ML Boys"
+    accounts: ["kalomaze", "wordgrammer", "_xjdr", "aidan_mclau"]
+  - name: "Lukas"
+    accounts: ["schizo_freq"]
+  - name: "punished_daniel"
+    accounts: ["punished_daniel"]
+  - name: "Technology AGPs"
+    accounts: ["typedfemale", "cis_female"]
+
+# Global configuration
+window_hours: 72       # lookback window for new tweets (24 * 3 days = 72 hours)
+max_per_account: 250   # cap to prevent spam
