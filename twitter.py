@@ -165,7 +165,11 @@ def format_tweet_body_html(raw_html: Optional[str]) -> str:
     block_level_tags = {'p', 'div', 'blockquote', 'li'}
     container_tags = {'ul', 'ol'}
 
-    for tag in soup.find_all(True):
+    for tag in list(soup.find_all(True)):
+        # Tags may already be removed when a parent was decomposed earlier in the loop.
+        # Skip any tag that is no longer attached to the tree to avoid BeautifulSoup unwrap errors.
+        if not tag.parent:
+            continue
         if tag.name == 'a':
             href = tag.get('href')
             if not href:
@@ -1197,10 +1201,6 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
             # Small delay to be polite to Nitter
             time.sleep(0.1)
         
-        # Save posts to database (unless in no-db mode)
-        if not no_db:
-            save_posts(list_new_posts)
-        
         # Render email for this account list
         timezone_str = full_config.get('newsletter', {}).get('timezone', 'UTC')
         text_content, html_content = render_email(list_new_posts, account_list, author_pfps, timezone_str)
@@ -1217,7 +1217,15 @@ def main(dry_run: bool, window_hours: int = None, no_db: bool = False, recipient
             logger.info("=" * 60)
             logger.info(f"Would email {len(list_new_posts)} posts to {recipient_email}")
         else:
-            send_email(text_content, html_content, subject, recipient_email, full_config, logger=logger)
-            logger.info(f"{account_list.name} newsletter sent with {len(list_new_posts)} posts!")
+            try:
+                send_email(text_content, html_content, subject, recipient_email, full_config, logger=logger)
+                logger.info(f"{account_list.name} newsletter sent with {len(list_new_posts)} posts!")
+                if not no_db:
+                    save_posts(list_new_posts)
+                    logger.info(f"Saved {len(list_new_posts)} posts to database after successful send.")
+            except Exception as e:
+                logger.error(f"Failed to send {account_list.name} newsletter: {e}")
+                # Do not save posts so they will be retried on the next run
+                raise
     
     logger.info("All Twitter newsletters processed!")
