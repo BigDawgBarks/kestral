@@ -149,6 +149,8 @@ def run_e2e():
         f"{base_url}/teortaxesTex/status/1997323428324327465#m",
         # Quote with video thumb
         f"{base_url}/teortaxesTex/status/1997321377951392074#m",
+        # Quote with GIF/video thumb
+        f"{base_url}/teortaxesTex/status/1997309468632080531#m",
         # Mention without quote
         f"{base_url}/teortaxesTex/status/1997319384298091003#m",
     ]

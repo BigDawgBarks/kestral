@@ -475,6 +475,28 @@ def test_video_media_handling():
     return result
 
 
+def test_gif_video_fallback():
+    """GIFs served as <video poster> should be treated like video thumbnails."""
+    print("\n==================================================")
+    print("TESTING: GIF-as-Video Handling")
+    print("==================================================")
+
+    result = TestResult()
+
+    base_url = "http://10.8.0.1:8080"
+    description = f'''
+    <p>Funny gif</p>
+    <video poster="/pic/media%2Fgif_poster.jpg" loop autoplay muted></video>
+    '''
+
+    images, videos = parse_media_from_description(description, base_url)
+    result.assert_equal(len(images), 0, "GIF video not treated as image")
+    result.assert_equal(len(videos), 1, "GIF video captured as video attachment")
+    result.assert_true(videos[0]["thumbnail_url"].endswith("gif_poster.jpg"), "GIF poster captured")
+
+    return result
+
+
 def test_blockquote_stripping():
     """Ensure blockquoted quoted-tweet content is removed from main body."""
     print("\n==================================================")
@@ -500,6 +522,63 @@ def test_blockquote_stripping():
     return result
 
 
+def test_extract_quote_tweet_url():
+    """Test _extract_quote_tweet_url via Post construction with various raw_description inputs."""
+    print("\n==================================================")
+    print("TESTING: _extract_quote_tweet_url")
+    print("==================================================")
+
+    result = TestResult()
+
+    now = datetime.now(timezone.utc)
+
+    # Blockquote link preferred over inline link
+    description_both = '''
+    <p>Some text <a href="/user/status/111">inline link</a></p>
+    <blockquote><a href="/quoted/status/222">block link</a></blockquote>
+    '''
+    post_both = Post(id="t1", handle="h", title="T", summary="S",
+                     published=now, nitter_url="http://n/h/status/1",
+                     raw_description=description_both)
+    result.assert_equal(
+        post_both.quote_tweet_url, "/quoted/status/222",
+        "Blockquote link preferred over inline link")
+
+    # Inline-only fallback works
+    description_inline = '''
+    <p>Text with <a href="/user/status/333">a status link</a></p>
+    '''
+    post_inline = Post(id="t2", handle="h", title="T", summary="S",
+                       published=now, nitter_url="http://n/h/status/2",
+                       raw_description=description_inline)
+    result.assert_equal(
+        post_inline.quote_tweet_url, "/user/status/333",
+        "Inline-only fallback works")
+
+    # No status links returns None
+    description_none = '<p>No links here at all</p>'
+    post_none = Post(id="t3", handle="h", title="T", summary="S",
+                     published=now, nitter_url="http://n/h/status/3",
+                     raw_description=description_none)
+    result.assert_none(
+        post_none.quote_tweet_url,
+        "No status links returns None")
+
+    # Multiple blockquotes (first wins)
+    description_multi = '''
+    <blockquote><a href="/first/status/444">first</a></blockquote>
+    <blockquote><a href="/second/status/555">second</a></blockquote>
+    '''
+    post_multi = Post(id="t4", handle="h", title="T", summary="S",
+                      published=now, nitter_url="http://n/h/status/4",
+                      raw_description=description_multi)
+    result.assert_equal(
+        post_multi.quote_tweet_url, "/first/status/444",
+        "Multiple blockquotes: first wins")
+
+    return result
+
+
 def run_all_tests():
     """Run all test suites"""
     print("🧪 NEWSLETTER SYSTEM TEST SUITE")
@@ -521,8 +600,14 @@ def run_all_tests():
         video_result = test_video_media_handling()
         all_results.append(video_result)
 
+        gif_result = test_gif_video_fallback()
+        all_results.append(gif_result)
+
         blockquote_result = test_blockquote_stripping()
         all_results.append(blockquote_result)
+
+        extract_quote_url_result = test_extract_quote_tweet_url()
+        all_results.append(extract_quote_url_result)
 
     except Exception as e:
         print(f"\n❌ CRITICAL ERROR: Test suite crashed")

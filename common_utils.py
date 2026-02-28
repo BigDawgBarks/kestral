@@ -46,7 +46,7 @@ def load_full_config(config_path: str, secrets_path: str) -> Dict:
 def set_up_logging(platform: str) -> logging.Logger:
     """Set up logging to both console and file for the specified platform"""
     # Create logs directory if it doesn't exist
-    logs_dir = Path('logs')
+    logs_dir = Path(__file__).parent / 'logs'
     logs_dir.mkdir(exist_ok=True)
 
     # Generate timestamp for log filename
@@ -92,7 +92,8 @@ def log_or_print(message: str, level: str = 'info', logger=None):
 
 def init_database():
     """Initialize SQLite database with all tables"""
-    with sqlite3.connect('newsletter.db') as conn:
+    db_path = Path(__file__).parent / 'newsletter.db'
+    with sqlite3.connect(str(db_path)) as conn:
         # Twitter/tweets table
         conn.execute('''
             CREATE TABLE IF NOT EXISTS tweets (
@@ -177,19 +178,17 @@ def send_email(text_content: str, html_content: str, subject: str = None, recipi
         logger = logging.getLogger('newsletter')
 
     if not config:
-        logger.error("Configuration required for sending email")
-        return
-        
+        raise ValueError("Configuration required for sending email")
+
     smtp_host = config.get('email', {}).get('smtp_host')
     smtp_port = config.get('email', {}).get('smtp_port', 587)
     smtp_user = config.get('email', {}).get('smtp_user')
     smtp_pass = config.get('email', {}).get('smtp_pass')
     mail_to = recipient_email
     mail_from = config.get('email', {}).get('mail_from')
-    
+
     if not all([smtp_host, smtp_user, smtp_pass, mail_to, mail_from]):
-        logger.error("Missing email configuration in config files")
-        return
+        raise ValueError("Missing email configuration in config files")
     
     # Use provided subject or default
     if not subject:
@@ -206,14 +205,11 @@ def send_email(text_content: str, html_content: str, subject: str = None, recipi
     msg.attach(text_part)
     msg.attach(html_part)
     
-    try:
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
-        logger.info(f"Email sent successfully to {mail_to}")
-    except Exception as e:
-        logger.error(f"Error sending email: {e}")
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
+    logger.info(f"Email sent successfully to {mail_to}")
 
 
 def image_to_base64(image_path: str) -> Optional[str]:
@@ -320,5 +316,6 @@ def upload_to_image_server(image_path: str, config: Dict = None, logger=None) ->
 
 def load_accounts_config() -> Dict:
     """Load accounts configuration from accounts.yaml"""
-    with open('accounts.yaml', 'r') as f:
+    accounts_path = Path(__file__).parent / 'accounts.yaml'
+    with open(accounts_path, 'r') as f:
         return yaml.safe_load(f)

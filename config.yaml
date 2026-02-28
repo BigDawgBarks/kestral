@@ -13,6 +13,4 @@ image_server:
   url: "https://burger-nation.freemyip.com:4611"
 
 newsletter:
-  window_hours: 36
-  max_per_account: 250
   timezone: "America/Los_Angeles"

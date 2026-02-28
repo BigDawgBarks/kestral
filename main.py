@@ -13,10 +13,11 @@ def main():
     parser = argparse.ArgumentParser(description='Multi-platform newsletter system')
     parser.add_argument('--platform', required=True, choices=['twitter', 'discord'],
                        help='Platform to process (twitter or discord)')
-    parser.add_argument('--dry-run', action='store_true', 
-                       help='Print to console only, do not send email')
-    parser.add_argument('--send', action='store_true',
-                       help='Actually send email')
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument('--dry-run', action='store_true',
+                            help='Print to console only, do not send email')
+    mode_group.add_argument('--send', action='store_true',
+                            help='Actually send email')
     parser.add_argument('--window', type=int, 
                        help='Override window hours from config')
     parser.add_argument('--no-db', action='store_true',
@@ -35,16 +36,14 @@ def main():
     # Set up logging for this platform
     logger = set_up_logging(args.platform)
 
-    if not args.dry_run and not args.send:
-        logger.error("Must specify either --dry-run or --send")
-        return
-
     # Log the command being run
     cmd_args = " ".join(sys.argv[1:])
     logger.info(f"Command: {cmd_args}")
 
-    # TEMPORARY: Make --account-lists a no-op (to reverse: uncomment line below and remove None)
-    # account_lists_filter = getattr(args, 'account_lists', None)
+    # --account-lists is intentionally disabled: processing all lists as a batch
+    # ensures consistent behavior and avoids partial-run edge cases. To re-enable
+    # per-list filtering, replace the line below with:
+    #   account_lists_filter = getattr(args, 'account_lists', None)
     account_lists_filter = None
 
     # Route to platform-specific implementation

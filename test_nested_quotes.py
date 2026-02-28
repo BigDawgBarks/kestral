@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Quick test script for nested quote tweet functionality
+Quick test script for nested quote tweet functionality.
+Run with: python test_nested_quotes.py
 """
 
 import sys
@@ -9,36 +10,30 @@ sys.path.append('.')
 from twitter import Post, extract_quote_tweet_url_from_text, render_quote_html_recursive
 from datetime import datetime, timezone
 
+
 def test_url_extraction():
     """Test URL extraction from text"""
     print("Testing URL extraction from text...")
 
-    # Test with Nitter URL
     text1 = "This is a tweet with a quote https://nitter.example.com/user/status/123456 in it"
     url1 = extract_quote_tweet_url_from_text(text1)
-    print(f"Text: {text1}")
-    print(f"Extracted URL: {url1}")
-    print()
+    assert url1 == "https://nitter.example.com/user/status/123456", f"Expected Nitter URL, got {url1!r}"
 
-    # Test with X.com URL
     text2 = "Another tweet with https://x.com/someone/status/789012 here"
     url2 = extract_quote_tweet_url_from_text(text2)
-    print(f"Text: {text2}")
-    print(f"Extracted URL: {url2}")
-    print()
+    assert url2 == "https://x.com/someone/status/789012", f"Expected X.com URL, got {url2!r}"
 
-    # Test with no URL
     text3 = "Just a regular tweet with no quotes"
     url3 = extract_quote_tweet_url_from_text(text3)
-    print(f"Text: {text3}")
-    print(f"Extracted URL: {url3}")
-    print()
+    assert url3 is None, f"Expected None, got {url3!r}"
+
+    print("  All URL extraction assertions passed.")
+
 
 def test_post_quote_data():
     """Test Post class quote data handling"""
     print("Testing Post class quote data methods...")
 
-    # Create a test post
     post = Post(
         id="test_123",
         handle="testuser",
@@ -48,7 +43,6 @@ def test_post_quote_data():
         nitter_url="https://nitter.example.com/testuser/status/123"
     )
 
-    # Test nested quote data
     quote_data = {
         "url": "https://nitter.example.com/quoted/status/456",
         "author": "quoteduser",
@@ -64,21 +58,20 @@ def test_post_quote_data():
 
     post.set_quote_data(quote_data)
 
-    print(f"Quote tweet URL: {post.quote_tweet_url}")
-    print(f"Quote author: {post.quote_author}")
-    print(f"Quote text: {post.quote_text}")
-    print(f"Quote data: {post.quote_data}")
-    print()
+    assert post.quote_tweet_url == "https://nitter.example.com/quoted/status/456", \
+        f"Unexpected quote_tweet_url: {post.quote_tweet_url!r}"
+    assert post.quote_author == "quoteduser", f"Unexpected quote_author: {post.quote_author!r}"
+    assert post.quote_text == "This is a quoted tweet", f"Unexpected quote_text: {post.quote_text!r}"
+    assert post.quote_data == quote_data, "quote_data not preserved"
 
-    # Test serialization
     serialized = post.serialize_quote_data_for_db()
-    print(f"Serialized for DB: {serialized[:100]}..." if len(serialized) > 100 else serialized)
-    print()
+    assert serialized.startswith('{'), f"Serialized data should be JSON, got {serialized[:50]!r}"
 
-    # Test deserialization
     deserialized = Post.deserialize_quote_data_from_db(serialized)
-    print(f"Deserialized: {deserialized}")
-    print()
+    assert deserialized == quote_data, "Deserialized data doesn't match original"
+
+    print("  All Post quote data assertions passed.")
+
 
 def test_recursive_rendering():
     """Test recursive HTML rendering"""
@@ -97,13 +90,18 @@ def test_recursive_rendering():
         }
     }
 
-    html = render_quote_html_recursive(quote_data, 0)
-    print("Generated HTML:")
-    print(html[:500] + "..." if len(html) > 500 else html)
-    print()
+    rendered_html = render_quote_html_recursive(quote_data, 0)
+    assert rendered_html, "Rendered HTML should not be empty"
+    assert "@quoteduser" in rendered_html, "Main quote author missing from HTML"
+    assert "@nesteduser" in rendered_html, "Nested quote author missing from HTML"
+    assert "This is a quoted tweet" in rendered_html, "Main quote text missing from HTML"
+    assert "This is a nested quote" in rendered_html, "Nested quote text missing from HTML"
+
+    print("  All recursive rendering assertions passed.")
+
 
 if __name__ == "__main__":
     test_url_extraction()
     test_post_quote_data()
     test_recursive_rendering()
-    print("✅ All tests completed successfully!")
+    print("\nAll tests passed!")

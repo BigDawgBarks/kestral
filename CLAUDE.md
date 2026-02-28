@@ -204,6 +204,7 @@ def download_images(tweet_id, handle, image_urls):
   - Uses `NITTER_BASE_URL` (default `http://10.8.0.1:8080`)
   - Golden snapshot: `fixtures/e2e_email_snapshot.html`
   - Regenerate after intentional email/Nitter layout changes: `REGENERATE_GOLDEN=1 python test_e2e.py`
+   - Rule: Always run the E2E test first and inspect differences before regenerating goldens. Do not update the snapshot without seeing what changed; this prevents hiding regressions.
 
 ## Current Progress (as of 2025-09-04)
 
